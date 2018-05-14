@@ -24,6 +24,11 @@ class CGAN(object):
         self.bot = bot
         self.verbosity = verbosity
 
+        if bot is not None:
+            self.print = self.bot.send_message
+        else:
+            self.print = print
+
         if dataset_name == 'mnist' or dataset_name == 'fashion-mnist':
             # parameters
             self.input_height = 28
@@ -251,13 +256,13 @@ class CGAN(object):
                 self.num_batches
             counter = checkpoint_counter
             if self.verbosity >= 1:
-                self.bot.send_message("[*] Load SUCCESS")
+                self.print("[*] Load SUCCESS")
         else:
             start_epoch = 0
             start_batch_id = 0
             counter = 1
             if self.verbosity >= 1:
-                self.bot.send_message("[!] Load failed...")
+                self.print("[!] Load failed...")
 
         # loop for epoch
         start_time = time.time()
@@ -293,7 +298,7 @@ class CGAN(object):
                 counter += 1
 
                 if self.verbosity >= 2:
-                    self.bot.send_message("Epoch: [%2d] [%4d/%4d] time: %4.4f,"
+                    self.print("Epoch: [%2d] [%4d/%4d] time: %4.4f,"
                                           " d_loss: %.8f, g_loss: %.8f"
                                           % (epoch, idx, self.num_batches,
                                              time.time() - start_time,
@@ -317,7 +322,7 @@ class CGAN(object):
                         + '/' + self.model_name +
                         '_train_{:04d}_{:04d}.png'.format(epoch, idx))
 
-                    if self.verbosity >= 2:
+                    if self.verbosity >= 2 and self.bot is not None:
                         self.bot.send_file(
                             os.path.join(self.result_dir, self.model_dir,
                                          self.model_name +
@@ -359,7 +364,7 @@ class CGAN(object):
             check_folder(self.result_dir + '/' + self.model_dir) + '/' +
             self.model_name + '_epoch%03d' % epoch + '_test_all_classes.png')
 
-        if self.verbosity >= 1:
+        if self.verbosity >= 1 and self.bot is not None:
             self.bot.send_file(
                 os.path.join(self.result_dir, self.model_dir,
                              self.model_name + '_epoch%03d' % epoch +
@@ -385,7 +390,7 @@ class CGAN(object):
                         '/' + self.model_name + '_epoch%03d' % epoch +
                         '_test_class_%d.png' % l)
 
-            if self.verbosity >= 2:
+            if self.verbosity >= 2 and self.bot is not None:
                 self.bot.send_file(
                     os.path.join(self.result_dir, self.model_dir,
                                  self.model_name + '_epoch%03d' % epoch +
@@ -410,7 +415,7 @@ class CGAN(object):
                     + self.model_name + '_epoch%03d' % epoch +
                     '_test_all_classes_style_by_style.png')
 
-        if self.verbosity >= 1:
+        if self.verbosity >= 1 and self.bot is not None:
             self.bot.send_file(
                 os.path.join(self.result_dir, self.model_dir,
                              self.model_name + '_epoch%03d' % epoch +
@@ -435,7 +440,7 @@ class CGAN(object):
     def load(self, checkpoint_dir):
         import re
         if self.verbosity >= 1:
-            self.bot.send_message("[*] Reading checkpoints...")
+            self.print("[*] Reading checkpoints...")
         checkpoint_dir = os.path.join(checkpoint_dir,
                                       self.model_dir, self.model_name)
 
@@ -447,10 +452,10 @@ class CGAN(object):
             counter = int(next(
                 re.finditer("(\d+)(?!.*\d)", ckpt_name)).group(0))
             if self.verbosity >= 1:
-                self.bot.send_message("[*] Success to read {}"
+                self.print("[*] Success to read {}"
                                       .format(ckpt_name))
             return True, counter
         else:
             if self.verbosity >= 1:
-                self.bot.send_message("[*] Failed to find a checkpoint")
+                self.print("[*] Failed to find a checkpoint")
             return False, 0

@@ -13,7 +13,7 @@ class EBGAN(object):
     model_name = "EBGAN"     # name for checkpoint
 
     def __init__(self, sess, epoch, batch_size, z_dim, dataset_name,
-                 checkpoint_dir, result_dir, log_dir):
+                 checkpoint_dir, result_dir, log_dir, bot, verbosity):
         self.sess = sess
         self.dataset_name = dataset_name
         self.checkpoint_dir = checkpoint_dir
@@ -21,6 +21,13 @@ class EBGAN(object):
         self.log_dir = log_dir
         self.epoch = epoch
         self.batch_size = batch_size
+        self.bot = bot
+        self.verbosity = verbosity
+
+        if bot is not None:
+            self.print = self.bot.send_message
+        else:
+            self.print = print
 
         if dataset_name == 'mnist' or dataset_name == 'fashion-mnist':
             # parameters
@@ -197,12 +204,14 @@ class EBGAN(object):
             start_batch_id = \
                 checkpoint_counter - start_epoch * self.num_batches
             counter = checkpoint_counter
-            print(" [*] Load SUCCESS")
+            if self.verbosity >= 1:
+                self.print("[*] Load SUCCESS")
         else:
             start_epoch = 0
             start_batch_id = 0
             counter = 1
-            print(" [!] Load failed...")
+            if self.verbosity >= 1:
+                self.print("[!] Load failed...")
 
         # loop for epoch
         start_time = time.time()
@@ -230,10 +239,11 @@ class EBGAN(object):
 
                 # display training status
                 counter += 1
-                print("Epoch: [%2d] [%4d/%4d] time: %4.4f, d_loss: %.8f, "
-                      " g_loss: %.8f"
-                      % (epoch, idx, self.num_batches, time.time() -
-                         start_time, d_loss, g_loss))
+                if self.verbosity >= 2:
+                    self.print("Epoch: [%2d] [%4d/%4d] time: %4.4f, "
+                               "d_loss: %.8f, g_loss: %.8f"
+                               % (epoch, idx, self.num_batches, time.time() -
+                                  start_time, d_loss, g_loss))
 
                 # save training results for every 300 steps
                 if np.mod(counter, 300) == 0:
@@ -249,7 +259,14 @@ class EBGAN(object):
                         './' +
                         check_folder(self.result_dir + '/' + self.model_dir) +
                         '/' + self.model_name +
-                        '_train_{:02d}_{:04d}.png'.format(epoch, idx))
+                        '_train_{:04d}_{:04d}.png'.format(epoch, idx))
+
+                    if self.verbosity >= 2 and self.bot is not None:
+                        self.bot.send_file(
+                            os.path.join(self.result_dir, self.model_dir,
+                                         self.model_name +
+                                         '_train_{:04d}_{:04d}.png'
+                                         .format(epoch, idx)))
 
             # After an epoch, start_batch_id is set to zero
             # non-zero value is only for the first epoch after loading
@@ -281,6 +298,12 @@ class EBGAN(object):
             check_folder(self.result_dir + '/' + self.model_dir) + '/' +
             self.model_name + '_epoch%03d' % epoch + '_test_all_classes.png')
 
+        if self.verbosity >= 1 and self.bot is not None:
+            self.bot.send_file(
+                os.path.join(self.result_dir, self.model_dir,
+                             self.model_name + '_epoch%03d' % epoch +
+                             '_test_all_classes.png'))
+
     @property
     def model_dir(self):
         return "{}_{}_{}_{}".format(
@@ -300,7 +323,8 @@ class EBGAN(object):
 
     def load(self, checkpoint_dir):
         import re
-        print(" [*] Reading checkpoints...")
+        if self.verbosity >= 1:
+            print("[*] Reading checkpoints...")
         checkpoint_dir = \
             os.path.join(checkpoint_dir, self.model_dir, self.model_name)
 
@@ -311,8 +335,10 @@ class EBGAN(object):
                                os.path.join(checkpoint_dir, ckpt_name))
             counter = int(next(
                 re.finditer("(\d+)(?!.*\d)", ckpt_name)).group(0))
-            print(" [*] Success to read {}".format(ckpt_name))
+            if self.verbosity >= 1:
+                self.print("[*] Success to read {}".format(ckpt_name))
             return True, counter
         else:
-            print(" [*] Failed to find a checkpoint")
+            if self.verbosity >= 1:
+                self.print("[*] Failed to find a checkpoint")
             return False, 0

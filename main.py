@@ -56,6 +56,8 @@ def parse_args():
                         help='Directory name to save the generated images')
     parser.add_argument('--log_dir', type=str, default='logs',
                         help='Directory name to save training logs')
+    parser.add_argument('--slack', type=bool, default=False,
+                        help='Activate Slack bot!')
     parser.add_argument('-v', '--verbosity', action='count', default=0,
                         help='increase output verbosity')
 
@@ -92,16 +94,20 @@ def check_args(args):
 def main():
     """main"""
 
-    # Slack Bot
-    config = configparser.ConfigParser()
-    config.read('slack.config')
-    bot = SlackBot(token=config['SLACK']['token'],
-                   channel_name=config['SLACK']['channel_name'])
-
     # parse arguments
     args = parse_args()
     if args is None:
         exit()
+
+    # Slack Bot
+    if args.slack:
+        config = configparser.ConfigParser()
+        config.read('slack.config')
+        bot = SlackBot(token=config['SLACK']['token'],
+                       channel_name=config['SLACK']['channel_name'])
+        print = bot.send_message
+    else:
+        bot = None
 
     # open session
     models = [GAN, CGAN, WGAN_GP, BEGAN, EBGAN]
@@ -122,8 +128,8 @@ def main():
                             bot=bot,
                             verbosity=args.verbosity)
         if gan is None:
-            bot.send_message(text="<!channel> ERROR!\n\n"
-                             "[!] There is no option for " + args.gan_type)
+            print(text="<!channel> ERROR!\n\n"
+                  "[!] There is no option for " + args.gan_type)
             raise Exception("[!] There is no option for " + args.gan_type)
 
         # build graph
@@ -134,11 +140,11 @@ def main():
 
         # launch the graph in a session
         gan.train()
-        bot.send_message(text="[*] Training finished!")
+        print(text="[*] Training finished!")
 
         # visualize learned generator
         gan.visualize_results(args.epoch-1)
-        bot.send_message(text="[*] Testing finished!")
+        print(text="[*] Testing finished!")
 
 
 if __name__ == '__main__':
