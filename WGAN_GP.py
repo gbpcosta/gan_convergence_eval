@@ -241,10 +241,10 @@ class WGAN_GP(object):
                 # display training status
                 if self.verbosity >= 2:
                     self.print("Epoch: [%2d] [%4d/%4d] time: %4.4f,"
-                                          " d_loss: %.8f, g_loss: %.8f"
-                                          % (epoch, idx, self.num_batches,
-                                             time.time() - start_time, d_loss,
-                                             g_loss))
+                               " d_loss: %.8f, g_loss: %.8f"
+                               % (epoch, idx, self.num_batches,
+                                  time.time() - start_time, d_loss,
+                                  g_loss))
 
                 # save training results for every 300 steps
                 if np.mod(counter, 300) == 0:
@@ -336,8 +336,7 @@ class WGAN_GP(object):
             counter = int(next(
                 re.finditer("(\d+)(?!.*\d)", ckpt_name)).group(0))
             if self.verbosity >= 1:
-                self.print("[*] Success to read {}"
-                                      .format(ckpt_name))
+                self.print("[*] Success to read {}".format(ckpt_name))
             return True, counter
         else:
             if self.verbosity >= 1:

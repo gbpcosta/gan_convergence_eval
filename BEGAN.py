@@ -1,4 +1,4 @@
-#-*- coding: utf-8 -*-
+# -*- coding: utf-8 -*-
 
 from __future__ import division
 import os
@@ -291,11 +291,11 @@ class BEGAN(object):
                 counter += 1
                 if self.verbosity >= 2:
                     self.print("Epoch: [%2d] [%4d/%4d] time: %4.4f,"
-                                          " d_loss: %.8f, g_loss: %.8f, "
-                                          "M: %.8f, k: %.8f"
-                                          % (epoch, idx, self.num_batches,
-                                             time.time() - start_time, d_loss,
-                                             g_loss, M_value, k_value))
+                               " d_loss: %.8f, g_loss: %.8f, "
+                               "M: %.8f, k: %.8f"
+                               % (epoch, idx, self.num_batches,
+                                  time.time() - start_time, d_loss,
+                                  g_loss, M_value, k_value))
 
                 # if np.mod(counter, 100) == 0:
                 samples = self.sess.run(self.fake_images,
@@ -466,8 +466,7 @@ class BEGAN(object):
             counter = int(next(re.finditer("(\d+)(?!.*\d)",
                                ckpt_name)).group(0))
             if self.verbosity >= 1:
-                self.print("[*] Success to read {}"
-                                      .format(ckpt_name))
+                self.print("[*] Success to read {}".format(ckpt_name))
             return True, counter
         else:
             if self.verbosity >= 1:
