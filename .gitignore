@@ -1,2 +1,8 @@
+*.pyc
 draft.py
+slack.config
+
 datasets/
+logs/
+results/
+checkpoint/
