@@ -8,6 +8,7 @@ from GAN import GAN
 from CGAN import CGAN
 from WGAN_GP import WGAN_GP
 from BEGAN import BEGAN
+from EBGAN import EBGAN
 
 from utils import show_all_variables
 from utils import check_folder
@@ -38,7 +39,7 @@ def parse_args():
     parser = argparse.ArgumentParser(description=desc)
 
     parser.add_argument('--gan_type', type=str, default='GAN',
-                        choices=['GAN', 'CGAN', 'BEGAN', 'WGAN_GP'],
+                        choices=['GAN', 'CGAN', 'BEGAN', 'WGAN_GP', 'EBGAN'],
                         help='The type of GAN', required=True)
     parser.add_argument('--dataset', type=str, default='mnist',
                         choices=['mnist', 'fashion-mnist', 'celebA'],
@@ -103,7 +104,7 @@ def main():
         exit()
 
     # open session
-    models = [GAN, CGAN, WGAN_GP, BEGAN]
+    models = [GAN, CGAN, WGAN_GP, BEGAN, EBGAN]
     with tf.Session(config=tf.ConfigProto(allow_soft_placement=True)) as sess:
         # declare instance for GAN
 
