@@ -108,6 +108,7 @@ def main():
         print = bot.send_message
     else:
         bot = None
+        print = print
 
     # open session
     models = [GAN, CGAN, WGAN_GP, BEGAN, EBGAN]
@@ -128,7 +129,7 @@ def main():
                             bot=bot,
                             verbosity=args.verbosity)
         if gan is None:
-            print(text="<!channel> ERROR!\n\n"
+            print("<!channel> ERROR!\n\n"
                   "[!] There is no option for " + args.gan_type)
             raise Exception("[!] There is no option for " + args.gan_type)
 
@@ -140,11 +141,11 @@ def main():
 
         # launch the graph in a session
         gan.train()
-        print(text="[*] Training finished!")
+        print("[*] Training finished!")
 
         # visualize learned generator
         gan.visualize_results(args.epoch-1)
-        print(text="[*] Testing finished!")
+        print("[*] Testing finished!")
 
 
 if __name__ == '__main__':
