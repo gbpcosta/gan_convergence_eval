@@ -383,6 +383,99 @@ class BEGAN(object):
         else:
             raise NotImplementedError
 
+    def plot_metrics(self, metrics_list, iterations_list,
+                     metric_names=None, n_cols=2, legend=False, x_label=None,
+                     y_label=None, wspace=None, hspace=None):
+        # cmap=plt.cm.tab20
+        assert isinstance(metrics_list, (list, tuple)) and \
+            not isinstance(metrics_list, str)
+
+        # fig, ax1 = plt.subplots(1,1, figsize=(10,8))
+        fig = plt.figure(figsize=(12, 16))
+
+        grid_cols = n_cols
+        grid_rows = int(np.ceil(len(metrics_list) / n_cols))
+
+        gs = GridSpec(grid_rows, grid_cols)
+        if wspace is not None and hspace is not None:
+            gs.update(wspace=wspace, hspace=hspace)
+        elif wspace is not None:
+            gs.update(wspace=wspace)
+        elif hspace is not None:
+            gs.update(hspace=hspace)
+
+        n_plots = len(metrics_list)
+
+        for ii, metric in enumerate(metrics_list):
+            # if isinstance(first_it, (list, tuple)) and \
+            #    isinstance(it_counter, (list, tuple)):
+            #     list_it = range(first_it[ii], it_counter[ii])
+            # else:
+            #     list_it = range(first_it, it_counter)
+
+            # if (n_plots % n_cols != 0) or (ii // n_cols == grid_rows):
+            ax = plt.subplot(gs[ii // n_cols, ii % n_cols])
+            # else:
+
+            ax.yaxis.set_major_formatter(FormatStrFormatter('%.4f'))
+
+            if isinstance(metric, (list, tuple)):
+                lines = []
+                for jj, submetric in enumerate(metric):
+                    if metric_names is not None:
+                        label = metric_names[ii][jj]
+                    else:
+                        label = "line_%01d" % jj
+                    line, = ax.plot(iterations_list, submetric,
+                                    color='C%d' % jj,
+                                    label=label)
+                    lines.append(line)
+            else:
+                if metric_names is not None:
+                    label = metric_names[ii]
+                else:
+                    label = "line_01"
+                line, = ax.plot(iterations_list, metric, color='C0',
+                                label=label)
+                lines = [line]
+
+            if (not isinstance(legend, (list, tuple)) and legend) or \
+                    (isinstance(legend, (list, tuple)) and legend[ii]):
+                lg = ax.legend(handles=lines,
+                               bbox_to_anchor=(1.0, 1.0),
+                               loc="upper left")
+                bbox_extra_artists = (lg, )
+            else:
+                bbox_extra_artists = None
+
+            if x_label is not None and not isinstance(x_label, (list, tuple)):
+                ax.set_xlabel(x_label, color='k')
+            elif isinstance(x_label, (list, tuple)):
+                ax.set_xlabel(x_label[ii], color='k')
+
+            # Make the y-axis label, ticks and tick labels
+            # match the line color.
+            if y_label is not None and not isinstance(y_label, (list, tuple)):
+                ax.set_ylabel(y_label, color='k')
+            elif isinstance(y_label, (list, tuple)):
+                ax.set_ylabel(y_label[ii], color='k')
+            ax.tick_params('y', colors='k')
+
+            # lg = ax2.legend(handles=[M_line], bbox_to_anchor=(1.0, 1.0),
+            # loc="lower left")
+            # lg = ax2.legend(handles=[MMD_line], bbox_to_anchor=(1.0, 1.0),
+            # loc="lower left")
+
+        plt.savefig(
+            os.path.join(check_folder(self.result_dir + '/' + self.model_dir),
+                         "loss.png"), dpi=300,
+            bbox_extra_artists=bbox_extra_artists, bbox_inches='tight')
+        plt.close(fig)
+
+        if self.verbosity >= 1 and self.bot is not None:
+            self.bot.send_file(
+                os.path.join(self.result_dir, self.model_dir, "loss.png"))
+
     def plot_loss(self, d_loss, g_loss, M, logMMD, first_it, it_counter):
         list_it = range(first_it, it_counter)
 
