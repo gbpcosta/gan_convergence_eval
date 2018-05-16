@@ -282,12 +282,12 @@ class WGAN_GP(object):
                 counter += 1
 
                 # display training status
-                if self.verbosity >= 2:
-                    print("Epoch: [%2d] [%4d/%4d] time: %4.4f,"
-                          " d_loss: %.8f, g_loss: %.8f"
-                          % (epoch, idx, self.num_batches,
-                             time.time() - start_time, d_loss,
-                             g_loss))
+                # if self.verbosity >= 2:
+                #     print("Epoch: [%2d] [%4d/%4d] time: %4.4f,"
+                #           " d_loss: %.8f, g_loss: %.8f"
+                #           % (epoch, idx, self.num_batches,
+                #              time.time() - start_time, d_loss,
+                #              g_loss))
 
                 # if np.mod(counter, 100) == 0:
                 samples = self.sess.run(self.fake_images,
@@ -325,6 +325,13 @@ class WGAN_GP(object):
                                          self.model_name +
                                          '_train_{:04d}_{:04d}.png'
                                          .format(epoch, idx)))
+
+            if self.verbosity >= 2:
+                print("Epoch [%02d]: time: %4.4f,"
+                      " d_loss: %.8f, g_loss: %.8f"
+                      % (epoch, time.time() - start_time,
+                         np.mean(plot_d_loss[-self.batch_size:]),
+                         np.mean(plot_g_loss[-self.batch_size:])))
 
             # After an epoch, start_batch_id is set to zero
             # non-zero value is only for the first epoch after loading

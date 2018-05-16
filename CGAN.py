@@ -86,32 +86,6 @@ class CGAN(object):
 
             # get number of batches for a single epoch
             self.num_batches = len(self.data_X) // self.batch_size
-        elif dataset_name == 'omniglot_models_raw':
-            # parameters
-            self.input_height = 785
-            self.input_width = 1
-            self.output_height = 785
-            self.output_width = 1
-
-            self.z_dim = z_dim         # dimension of noise-vector
-            self.c_dim = 1
-
-            # BEGAN Parameter
-            self.gamma = 0.75
-            self.lamda = 0.001
-
-            # train
-            self.learning_rate = 0.000001
-            self.beta1 = 0.5
-
-            # test1
-            self.sample_num = 16  # number of generated images to be saved
-
-            # load mnist
-            self.data_X, self.data_y = load_omniglot_models(self.dataset_name)
-
-            # get number of batches for a single epoch
-            self.num_batches = len(self.data_X) // self.batch_size
         else:
             raise NotImplementedError
 
@@ -337,15 +311,9 @@ class CGAN(object):
                 plot_d_loss.append(d_loss)
                 plot_g_loss.append(g_loss)
                 # plot_M.append(M_value)
+
                 # display training status
                 counter += 1
-
-                if self.verbosity >= 2:
-                    print("Epoch: [%2d] [%4d/%4d] time: %4.4f,"
-                          " d_loss: %.8f, g_loss: %.8f"
-                          % (epoch, idx, self.num_batches,
-                             time.time() - start_time,
-                             d_loss, g_loss))
 
                 # if np.mod(counter, 100) == 0:
                 samples = self.sess.run(self.fake_images,
@@ -385,6 +353,13 @@ class CGAN(object):
                                          self.model_name +
                                          '_train_{:04d}_{:04d}.png'
                                          .format(epoch, idx)))
+
+            if self.verbosity >= 2:
+                print("Epoch [%02d]: time: %4.4f,"
+                      " d_loss: %.8f, g_loss: %.8f"
+                      % (epoch, time.time() - start_time,
+                         np.mean(plot_d_loss[-self.batch_size:]),
+                         np.mean(plot_g_loss[-self.batch_size:])))
 
             # After an epoch, start_batch_id is set to zero
             # non-zero value is only for the first epoch after loading
