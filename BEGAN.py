@@ -343,8 +343,16 @@ class BEGAN(object):
             start_batch_id = 0
 
             # plot loss and evaluation metrics
-            self.plot_loss(plot_d_loss, plot_g_loss, plot_M,
-                           plot_logMMD, first_it, counter)
+            # self.plot_loss(plot_d_loss, plot_g_loss, plot_M,
+            #                plot_logMMD, first_it, counter)
+            self.plot_metrics([(plot_d_loss, plot_g_loss), plot_logMMD],
+                              list(range(first_it, counter)),
+                              metric_names=[("Discriminator loss",
+                                             "Generator loss"), "log(MMD)"],
+                              n_cols=1,
+                              legend=[True, False],
+                              x_label="Iteration",
+                              y_label=["Loss", "log(MMD)"])
 
             # save model
             self.save(self.checkpoint_dir, counter)
@@ -419,7 +427,7 @@ class BEGAN(object):
 
             ax.yaxis.set_major_formatter(FormatStrFormatter('%.4f'))
 
-            if isinstance(metric, (list, tuple)):
+            if isinstance(metric[0], (list, tuple)):
                 lines = []
                 for jj, submetric in enumerate(metric):
                     if metric_names is not None:
@@ -476,57 +484,6 @@ class BEGAN(object):
             self.bot.send_file(
                 os.path.join(self.result_dir, self.model_dir, "loss.png"))
 
-    def plot_loss(self, d_loss, g_loss, M, logMMD, first_it, it_counter):
-        list_it = range(first_it, it_counter)
-
-        # fig, ax1 = plt.subplots(1,1, figsize=(10,8))
-        fig = plt.figure(figsize=(12, 16))
-
-        gs = GridSpec(2, 1)
-        # gs.update(wspace=0.25, hspace=0.05)
-
-        ax1 = plt.subplot(gs[0, 0])
-        ax2 = plt.subplot(gs[1, 0])
-
-        ax1.yaxis.set_major_formatter(FormatStrFormatter('%.4f'))
-        d_line, = ax1.plot(list_it, d_loss, 'r', label="Discriminator loss")
-        g_line, = ax1.plot(list_it, g_loss, 'b', label="Generator loss")
-
-        lg = ax1.legend(handles=[d_line, g_line], bbox_to_anchor=(1.0, 1.0),
-                        loc="upper left")
-
-        ax1.set_xlabel('Iterations')
-
-        # Make the y-axis label, ticks and tick labels match the line color.
-        ax1.set_ylabel('Loss', color='k')
-        ax1.tick_params('y', colors='k')
-
-        ax2.yaxis.set_major_formatter(FormatStrFormatter('%.4f'))
-        M_line, = ax2.plot(list_it, M, 'k', label="M value")
-
-        ax2.set_xlabel('Iterations')
-
-        ax3 = ax2.twinx()
-        MMD_line = ax3.plot(list_it, logMMD, 'g')
-        # map(lambda x:x+100-1, range(0,it_counter,100))
-        ax3.set_ylabel('Log(MMD)', color='g')
-        ax3.tick_params('y', colors='g')
-        ax3.yaxis.set_major_formatter(FormatStrFormatter('%.4f'))
-
-        # lg = ax2.legend(handles=[M_line], bbox_to_anchor=(1.0, 1.0),
-        # loc="lower left")
-        # lg = ax2.legend(handles=[MMD_line], bbox_to_anchor=(1.0, 1.0),
-        # loc="lower left")
-
-        plt.savefig(
-            os.path.join(check_folder(self.result_dir + '/' + self.model_dir),
-                         "loss.png"), dpi=300, bbox_extra_artists=(lg,),
-            bbox_inches='tight')
-        plt.close(fig)
-
-        if self.verbosity >= 1 and self.bot is not None:
-            self.bot.send_file(
-                os.path.join(self.result_dir, self.model_dir, "loss.png"))
 
     @property
     def model_dir(self):

@@ -4,9 +4,17 @@ import os
 import time
 import tensorflow as tf
 import numpy as np
+import mmd
 
 from ops import *
 from utils import *
+
+from matplotlib.gridspec import GridSpec
+from matplotlib.ticker import FormatStrFormatter
+import matplotlib.pyplot as plt
+import matplotlib.colors as colors
+from matplotlib import ticker
+plt.switch_backend("Agg")
 
 
 class CGAN(object):
@@ -112,50 +120,58 @@ class CGAN(object):
             raise NotImplementedError
 
     def discriminator(self, x, y, is_training=True, reuse=False):
-        # Network Architecture is exactly same as in infoGAN
-        # (https://arxiv.org/abs/1606.03657)
-        # Architecture : (64)4c2s-(128)4c2s_BL-FC1024_BL-FC1_S
-        with tf.variable_scope("discriminator", reuse=reuse):
+        if self.dataset_name == 'mnist' or \
+           self.dataset_name == 'fashion-mnist':
+            # Network Architecture is exactly same as in infoGAN
+            # (https://arxiv.org/abs/1606.03657)
+            # Architecture : (64)4c2s-(128)4c2s_BL-FC1024_BL-FC1_S
+            with tf.variable_scope("discriminator", reuse=reuse):
 
-            # merge image and label
-            y = tf.reshape(y, [self.batch_size, 1, 1, self.y_dim])
-            x = conv_cond_concat(x, y)
+                # merge image and label
+                y = tf.reshape(y, [self.batch_size, 1, 1, self.y_dim])
+                x = conv_cond_concat(x, y)
 
-            net = lrelu(conv2d(x, 64, 4, 4, 2, 2, name='d_conv1'))
-            net = lrelu(bn(conv2d(net, 128, 4, 4, 2, 2, name='d_conv2'),
-                           is_training=is_training, scope='d_bn2'))
-            net = tf.reshape(net, [self.batch_size, -1])
-            net = lrelu(bn(linear(net, 1024, scope='d_fc3'),
-                           is_training=is_training, scope='d_bn3'))
-            out_logit = linear(net, 1, scope='d_fc4')
-            out = tf.nn.sigmoid(out_logit)
+                net = lrelu(conv2d(x, 64, 4, 4, 2, 2, name='d_conv1'))
+                net = lrelu(bn(conv2d(net, 128, 4, 4, 2, 2, name='d_conv2'),
+                               is_training=is_training, scope='d_bn2'))
+                net = tf.reshape(net, [self.batch_size, -1])
+                net = lrelu(bn(linear(net, 1024, scope='d_fc3'),
+                               is_training=is_training, scope='d_bn3'))
+                out_logit = linear(net, 1, scope='d_fc4')
+                out = tf.nn.sigmoid(out_logit)
 
-            return out, out_logit, net
+                return out, out_logit, net
+        else:
+            raise NotImplementedError
 
     def generator(self, z, y, is_training=True, reuse=False):
-        # Network Architecture is exactly same as in infoGAN
-        # (https://arxiv.org/abs/1606.03657)
-        # Architecture : FC1024_BR-FC7x7x128_BR-(64)4dc2s_BR-(1)4dc2s_S
-        with tf.variable_scope("generator", reuse=reuse):
+        if self.dataset_name == 'mnist' or \
+           self.dataset_name == 'fashion-mnist':
+            # Network Architecture is exactly same as in infoGAN
+            # (https://arxiv.org/abs/1606.03657)
+            # Architecture : FC1024_BR-FC7x7x128_BR-(64)4dc2s_BR-(1)4dc2s_S
+            with tf.variable_scope("generator", reuse=reuse):
 
-            # merge noise and label
-            z = concat([z, y], 1)
+                # merge noise and label
+                z = concat([z, y], 1)
 
-            net = tf.nn.relu(bn(linear(z, 1024, scope='g_fc1'),
-                                is_training=is_training, scope='g_bn1'))
-            net = tf.nn.relu(bn(linear(net, 128 * 7 * 7, scope='g_fc2'),
-                                is_training=is_training, scope='g_bn2'))
-            net = tf.reshape(net, [self.batch_size, 7, 7, 128])
-            net = tf.nn.relu(
-                bn(deconv2d(net, [self.batch_size, 14, 14, 64],
-                            4, 4, 2, 2, name='g_dc3'),
-                   is_training=is_training, scope='g_bn3'))
+                net = tf.nn.relu(bn(linear(z, 1024, scope='g_fc1'),
+                                    is_training=is_training, scope='g_bn1'))
+                net = tf.nn.relu(bn(linear(net, 128 * 7 * 7, scope='g_fc2'),
+                                    is_training=is_training, scope='g_bn2'))
+                net = tf.reshape(net, [self.batch_size, 7, 7, 128])
+                net = tf.nn.relu(
+                    bn(deconv2d(net, [self.batch_size, 14, 14, 64],
+                                4, 4, 2, 2, name='g_dc3'),
+                       is_training=is_training, scope='g_bn3'))
 
-            out = tf.nn.sigmoid(
-                deconv2d(net, [self.batch_size, 28, 28, 1],
-                         4, 4, 2, 2, name='g_dc4'))
+                out = tf.nn.sigmoid(
+                    deconv2d(net, [self.batch_size, 28, 28, 1],
+                             4, 4, 2, 2, name='g_dc4'))
 
-            return out
+                return out
+        else:
+            raise NotImplementedError
 
     def build_model(self):
         # some parameters
@@ -230,6 +246,27 @@ class CGAN(object):
         self.g_sum = tf.summary.merge([d_loss_fake_sum, g_loss_sum])
         self.d_sum = tf.summary.merge([d_loss_real_sum, d_loss_sum])
 
+        """ MMD """
+        self.generated_samples = tf.placeholder(tf.float32,
+                                                [None, self.output_height,
+                                                 self.output_width,
+                                                 self.c_dim],
+                                                name="mmd_generatedsamples")
+        self.training_data = tf.placeholder(tf.float32,
+                                            [None, self.input_height,
+                                             self.input_width, self.c_dim],
+                                            name="mmd_trainingdata")
+
+        aux_1 = tf.reshape(self.generated_samples,
+                           [-1, self.output_width * self.output_height *
+                            self.c_dim])
+
+        aux_2 = tf.reshape(self.training_data,
+                           [-1, self.input_width * self.input_height *
+                            self.c_dim])
+
+        self.log_mmd = tf.log(mmd.rbf_mmd2(aux_1, aux_2))
+
     def train(self):
 
         # initialize all variables
@@ -264,6 +301,13 @@ class CGAN(object):
             if self.verbosity >= 1:
                 self.print("[!] Load failed...")
 
+        # plot variables
+        plot_d_loss = []
+        plot_g_loss = []
+        plot_M = []
+        plot_logMMD = []
+        first_it = counter
+
         # loop for epoch
         start_time = time.time()
         for epoch in range(start_epoch, self.epoch):
@@ -294,6 +338,9 @@ class CGAN(object):
                                              self.z: batch_z})
                 self.writer.add_summary(summary_str, counter)
 
+                plot_d_loss.append(d_loss)
+                plot_g_loss.append(g_loss)
+                # plot_M.append(M_value)
                 # display training status
                 counter += 1
 
@@ -304,8 +351,22 @@ class CGAN(object):
                                   time.time() - start_time,
                                   d_loss, g_loss))
 
+                # if np.mod(counter, 100) == 0:
+                samples = self.sess.run(self.fake_images,
+                                        feed_dict={self.z: self.sample_z,
+                                                   self.y: self.test_labels})
+
+                logMDD_value = \
+                    self.sess.run(self.log_mmd,
+                                  feed_dict={self.generated_samples: samples,
+                                             self.training_data: batch_images})
+
+                plot_logMMD.append(logMDD_value)
+
                 # save training results for every 300 steps
-                if np.mod(counter, 300) == 0:
+                if (self.dataset_name == 'mnist' or
+                    self.dataset_name == 'fashion-mnist') \
+                        and np.mod(counter, 300) == 0:
                     samples = \
                         self.sess.run(self.fake_images,
                                       feed_dict={self.z: self.sample_z,
@@ -334,6 +395,18 @@ class CGAN(object):
             # pre-trained model
             start_batch_id = 0
 
+            # plot loss and evaluation metrics
+            # self.plot_loss(plot_d_loss, plot_g_loss, plot_M,
+            #                plot_logMMD, first_it, counter)
+            self.plot_metrics([(plot_d_loss, plot_g_loss), plot_logMMD],
+                              list(range(first_it, counter)),
+                              metric_names=[("Discriminator loss",
+                                             "Generator loss"), "log(MMD)"],
+                              n_cols=1,
+                              legend=[True, False],
+                              x_label="Iteration",
+                              y_label=["Loss", "log(MMD)"])
+
             # save model
             self.save(self.checkpoint_dir, counter)
 
@@ -344,82 +417,183 @@ class CGAN(object):
         self.save(self.checkpoint_dir, counter)
 
     def visualize_results(self, epoch):
-        tot_num_samples = min(self.sample_num, self.batch_size)
-        image_frame_dim = int(np.floor(np.sqrt(tot_num_samples)))
+        if self.dataset_name == 'mnist' or \
+           self.dataset_name == 'fashion-mnist':
+            tot_num_samples = min(self.sample_num, self.batch_size)
+            image_frame_dim = int(np.floor(np.sqrt(tot_num_samples)))
 
-        """ random condition, random noise """
-        y = np.random.choice(self.y_dim, self.batch_size)
-        y_one_hot = np.zeros((self.batch_size, self.y_dim))
-        y_one_hot[np.arange(self.batch_size), y] = 1
-
-        z_sample = np.random.uniform(-1, 1, size=(self.batch_size, self.z_dim))
-
-        samples = self.sess.run(self.fake_images,
-                                feed_dict={self.z: z_sample,
-                                           self.y: y_one_hot})
-
-        save_images(
-            samples[:image_frame_dim * image_frame_dim, :, :, :],
-            [image_frame_dim, image_frame_dim],
-            check_folder(self.result_dir + '/' + self.model_dir) + '/' +
-            self.model_name + '_epoch%03d' % epoch + '_test_all_classes.png')
-
-        if self.verbosity >= 1 and self.bot is not None:
-            self.bot.send_file(
-                os.path.join(self.result_dir, self.model_dir,
-                             self.model_name + '_epoch%03d' % epoch +
-                             '_test_all_classes.png'))
-
-        # specified condition, random noise
-
-        n_styles = 10  # must be less than or equal to self.batch_size
-
-        np.random.seed()
-        si = np.random.choice(self.batch_size, n_styles)
-
-        for l in range(self.y_dim):
-            y = np.zeros(self.batch_size, dtype=np.int64) + l
+            """ random condition, random noise """
+            y = np.random.choice(self.y_dim, self.batch_size)
             y_one_hot = np.zeros((self.batch_size, self.y_dim))
             y_one_hot[np.arange(self.batch_size), y] = 1
 
-            samples = self.sess.run(self.fake_images, feed_dict={
-                                    self.z: z_sample, self.y: y_one_hot})
-            save_images(samples[:image_frame_dim * image_frame_dim, :, :, :],
-                        [image_frame_dim, image_frame_dim],
-                        check_folder(self.result_dir + '/' + self.model_dir) +
-                        '/' + self.model_name + '_epoch%03d' % epoch +
-                        '_test_class_%d.png' % l)
+            z_sample = np.random.uniform(-1, 1, size=(self.batch_size,
+                                         self.z_dim))
 
-            if self.verbosity >= 2 and self.bot is not None:
+            samples = self.sess.run(self.fake_images,
+                                    feed_dict={self.z: z_sample,
+                                               self.y: y_one_hot})
+
+            save_images(
+                samples[:image_frame_dim * image_frame_dim, :, :, :],
+                [image_frame_dim, image_frame_dim],
+                check_folder(self.result_dir + '/' + self.model_dir) + '/' +
+                self.model_name + '_epoch%03d' % epoch +
+                '_test_all_classes.png')
+
+            if self.verbosity >= 1 and self.bot is not None:
                 self.bot.send_file(
                     os.path.join(self.result_dir, self.model_dir,
                                  self.model_name + '_epoch%03d' % epoch +
-                                 '_test_class_%d.png' % l))
+                                 '_test_all_classes.png'))
 
-            samples = samples[si, :, :, :]
+            # specified condition, random noise
 
-            if l == 0:
-                all_samples = samples
+            n_styles = 10  # must be less than or equal to self.batch_size
+
+            np.random.seed()
+            si = np.random.choice(self.batch_size, n_styles)
+
+            for l in range(self.y_dim):
+                y = np.zeros(self.batch_size, dtype=np.int64) + l
+                y_one_hot = np.zeros((self.batch_size, self.y_dim))
+                y_one_hot[np.arange(self.batch_size), y] = 1
+
+                samples = self.sess.run(self.fake_images, feed_dict={
+                                        self.z: z_sample, self.y: y_one_hot})
+                save_images(
+                    samples[:image_frame_dim * image_frame_dim, :, :, :],
+                    [image_frame_dim, image_frame_dim],
+                    check_folder(self.result_dir + '/' + self.model_dir) +
+                    '/' + self.model_name + '_epoch%03d' % epoch +
+                    '_test_class_%d.png' % l)
+
+                if self.verbosity >= 2 and self.bot is not None:
+                    self.bot.send_file(
+                        os.path.join(self.result_dir, self.model_dir,
+                                     self.model_name + '_epoch%03d' % epoch +
+                                     '_test_class_%d.png' % l))
+
+                samples = samples[si, :, :, :]
+
+                if l == 0:
+                    all_samples = samples
+                else:
+                    all_samples = np.concatenate((all_samples, samples),
+                                                 axis=0)
+
+            """ save merged images to check style-consistency """
+            canvas = np.zeros_like(all_samples)
+            for s in range(n_styles):
+                for c in range(self.y_dim):
+                    canvas[s * self.y_dim + c, :, :, :] = \
+                        all_samples[c * n_styles + s, :, :, :]
+
+            save_images(canvas, [n_styles, self.y_dim],
+                        check_folder(self.result_dir + '/' + self.model_dir) +
+                        '/' + self.model_name + '_epoch%03d' % epoch +
+                        '_test_all_classes_style_by_style.png')
+
+            if self.verbosity >= 1 and self.bot is not None:
+                self.bot.send_file(
+                    os.path.join(self.result_dir, self.model_dir,
+                                 self.model_name + '_epoch%03d' % epoch +
+                                 '_test_all_classes_style_by_style.png'))
+        else:
+            raise NotImplementedError
+
+    def plot_metrics(self, metrics_list, iterations_list,
+                     metric_names=None, n_cols=2, legend=False, x_label=None,
+                     y_label=None, wspace=None, hspace=None):
+        # cmap=plt.cm.tab20
+        assert isinstance(metrics_list, (list, tuple)) and \
+            not isinstance(metrics_list, str)
+
+        # fig, ax1 = plt.subplots(1,1, figsize=(10,8))
+        fig = plt.figure(figsize=(12, 16))
+
+        grid_cols = n_cols
+        grid_rows = int(np.ceil(len(metrics_list) / n_cols))
+
+        gs = GridSpec(grid_rows, grid_cols)
+        if wspace is not None and hspace is not None:
+            gs.update(wspace=wspace, hspace=hspace)
+        elif wspace is not None:
+            gs.update(wspace=wspace)
+        elif hspace is not None:
+            gs.update(hspace=hspace)
+
+        n_plots = len(metrics_list)
+
+        for ii, metric in enumerate(metrics_list):
+            # if isinstance(first_it, (list, tuple)) and \
+            #    isinstance(it_counter, (list, tuple)):
+            #     list_it = range(first_it[ii], it_counter[ii])
+            # else:
+            #     list_it = range(first_it, it_counter)
+
+            # if (n_plots % n_cols != 0) or (ii // n_cols == grid_rows):
+            ax = plt.subplot(gs[ii // n_cols, ii % n_cols])
+            # else:
+
+            ax.yaxis.set_major_formatter(FormatStrFormatter('%.4f'))
+
+            if isinstance(metric[0], (list, tuple)):
+                lines = []
+                for jj, submetric in enumerate(metric):
+                    if metric_names is not None:
+                        label = metric_names[ii][jj]
+                    else:
+                        label = "line_%01d" % jj
+                    line, = ax.plot(iterations_list, submetric,
+                                    color='C%d' % jj,
+                                    label=label)
+                    lines.append(line)
             else:
-                all_samples = np.concatenate((all_samples, samples), axis=0)
+                if metric_names is not None:
+                    label = metric_names[ii]
+                else:
+                    label = "line_01"
+                line, = ax.plot(iterations_list, metric, color='C0',
+                                label=label)
+                lines = [line]
 
-        """ save merged images to check style-consistency """
-        canvas = np.zeros_like(all_samples)
-        for s in range(n_styles):
-            for c in range(self.y_dim):
-                canvas[s * self.y_dim + c, :, :, :] = \
-                    all_samples[c * n_styles + s, :, :, :]
+            if (not isinstance(legend, (list, tuple)) and legend) or \
+                    (isinstance(legend, (list, tuple)) and legend[ii]):
+                lg = ax.legend(handles=lines,
+                               bbox_to_anchor=(1.0, 1.0),
+                               loc="upper left")
+                bbox_extra_artists = (lg, )
+            else:
+                bbox_extra_artists = None
 
-        save_images(canvas, [n_styles, self.y_dim],
-                    check_folder(self.result_dir + '/' + self.model_dir) + '/'
-                    + self.model_name + '_epoch%03d' % epoch +
-                    '_test_all_classes_style_by_style.png')
+            if x_label is not None and not isinstance(x_label, (list, tuple)):
+                ax.set_xlabel(x_label, color='k')
+            elif isinstance(x_label, (list, tuple)):
+                ax.set_xlabel(x_label[ii], color='k')
+
+            # Make the y-axis label, ticks and tick labels
+            # match the line color.
+            if y_label is not None and not isinstance(y_label, (list, tuple)):
+                ax.set_ylabel(y_label, color='k')
+            elif isinstance(y_label, (list, tuple)):
+                ax.set_ylabel(y_label[ii], color='k')
+            ax.tick_params('y', colors='k')
+
+            # lg = ax2.legend(handles=[M_line], bbox_to_anchor=(1.0, 1.0),
+            # loc="lower left")
+            # lg = ax2.legend(handles=[MMD_line], bbox_to_anchor=(1.0, 1.0),
+            # loc="lower left")
+
+        plt.savefig(
+            os.path.join(check_folder(self.result_dir + '/' + self.model_dir),
+                         "loss.png"), dpi=300,
+            bbox_extra_artists=bbox_extra_artists, bbox_inches='tight')
+        plt.close(fig)
 
         if self.verbosity >= 1 and self.bot is not None:
             self.bot.send_file(
-                os.path.join(self.result_dir, self.model_dir,
-                             self.model_name + '_epoch%03d' % epoch +
-                             '_test_all_classes_style_by_style.png'))
+                os.path.join(self.result_dir, self.model_dir, "loss.png"))
 
     @property
     def model_dir(self):
