@@ -5,6 +5,7 @@ import time
 import tensorflow as tf
 import numpy as np
 import mmd
+from tqdm import tqdm
 
 from ops import *
 from utils import *
@@ -31,11 +32,6 @@ class WGAN_GP(object):
         self.batch_size = batch_size
         self.bot = bot
         self.verbosity = verbosity
-
-        if bot is not None:
-            self.print = self.bot.send_message
-        else:
-            self.print = print
 
         if dataset_name == 'mnist' or dataset_name == 'fashion-mnist':
             # parameters
@@ -238,13 +234,13 @@ class WGAN_GP(object):
                 self.num_batches
             counter = checkpoint_counter
             if self.verbosity >= 1:
-                self.print("[*] Load SUCCESS")
+                print("[*] Load SUCCESS")
         else:
             start_epoch = 0
             start_batch_id = 0
             counter = 1
             if self.verbosity >= 1:
-                self.print("[!] Load failed...")
+                print("[!] Load failed...")
 
         # plot variables
         plot_d_loss = []
@@ -257,7 +253,7 @@ class WGAN_GP(object):
         for epoch in range(start_epoch, self.epoch):
 
             # get batch data
-            for idx in range(start_batch_id, self.num_batches):
+            for idx in tqdm(range(start_batch_id, self.num_batches)):
                 batch_images = \
                     self.data_X[idx*self.batch_size:(idx+1)*self.batch_size]
                 batch_z = np.random.uniform(-1, 1, [self.batch_size,
@@ -287,11 +283,11 @@ class WGAN_GP(object):
 
                 # display training status
                 if self.verbosity >= 2:
-                    self.print("Epoch: [%2d] [%4d/%4d] time: %4.4f,"
-                               " d_loss: %.8f, g_loss: %.8f"
-                               % (epoch, idx, self.num_batches,
-                                  time.time() - start_time, d_loss,
-                                  g_loss))
+                    print("Epoch: [%2d] [%4d/%4d] time: %4.4f,"
+                          " d_loss: %.8f, g_loss: %.8f"
+                          % (epoch, idx, self.num_batches,
+                             time.time() - start_time, d_loss,
+                             g_loss))
 
                 # if np.mod(counter, 100) == 0:
                 samples = self.sess.run(self.fake_images,
@@ -323,7 +319,7 @@ class WGAN_GP(object):
                         '/' + self.model_name +
                         '_train_{:04d}_{:04d}.png'.format(epoch, idx))
 
-                    if self.verbosity >= 2 and self.bot is not None:
+                    if self.verbosity >= 3 and self.bot is not None:
                         self.bot.send_file(
                             os.path.join(self.result_dir, self.model_dir,
                                          self.model_name +
@@ -377,7 +373,7 @@ class WGAN_GP(object):
                 self.model_name + '_epoch%03d' % epoch +
                 '_test_all_classes.png')
 
-            if self.verbosity >= 1 and self.bot is not None:
+            if self.bot is not None:
                 self.bot.send_file(
                     os.path.join(self.result_dir, self.model_dir,
                                  self.model_name + '_epoch%03d' % epoch +
@@ -471,13 +467,13 @@ class WGAN_GP(object):
 
         plt.savefig(
             os.path.join(check_folder(self.result_dir + '/' + self.model_dir),
-                         "loss.png"), dpi=300,
+                         "metrics.png"), dpi=300,
             bbox_extra_artists=bbox_extra_artists, bbox_inches='tight')
         plt.close(fig)
 
-        if self.verbosity >= 1 and self.bot is not None:
+        if self.bot is not None:
             self.bot.send_file(
-                os.path.join(self.result_dir, self.model_dir, "loss.png"))
+                os.path.join(self.result_dir, self.model_dir, "metrics.png"))
 
     @property
     def model_dir(self):
@@ -498,7 +494,7 @@ class WGAN_GP(object):
     def load(self, checkpoint_dir):
         import re
         if self.verbosity >= 1:
-            self.print("[*] Reading checkpoints...")
+            print("[*] Reading checkpoints...")
         checkpoint_dir = os.path.join(checkpoint_dir, self.model_dir,
                                       self.model_name)
 
@@ -510,9 +506,9 @@ class WGAN_GP(object):
             counter = int(next(
                 re.finditer("(\d+)(?!.*\d)", ckpt_name)).group(0))
             if self.verbosity >= 1:
-                self.print("[*] Success to read {}".format(ckpt_name))
+                print("[*] Success to read {}".format(ckpt_name))
             return True, counter
         else:
             if self.verbosity >= 1:
-                self.print("[*] Failed to find a checkpoint")
+                print("[*] Failed to find a checkpoint")
             return False, 0

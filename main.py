@@ -105,10 +105,8 @@ def main():
         config.read('slack.config')
         bot = SlackBot(token=config['SLACK']['token'],
                        channel_name=config['SLACK']['channel_name'])
-        print = bot.send_message
     else:
         bot = None
-        print = print
 
     # open session
     models = [GAN, CGAN, WGAN_GP, BEGAN, EBGAN]
