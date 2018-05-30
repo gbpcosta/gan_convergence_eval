@@ -6,7 +6,7 @@ import argparse
 import configparser
 
 os.environ["PYTHONHASHSEED"] = '42'
-os.environ["CUDA_VISIBLE_DEVICES"] = '0'
+# os.environ["CUDA_VISIBLE_DEVICES"] = '0'
 os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'
 sys.path.insert(0, '/home/DADOS1/gabriel/random/slack-bot/')
 
@@ -55,12 +55,16 @@ def parse_args():
                         help='Directory name to save the generated images')
     parser.add_argument('--log_dir', type=str, default='_outputs/logs',
                         help='Directory name to save training logs')
+    parser.add_argument('--gpu_id', type=str, default='0',
+                        help='GPU ID')
     parser.add_argument('--slack', action='store_true',
                         help='Activate Slack bot!')
     parser.add_argument('--redo', action='store_true',
-                        help='Activate Slack bot!')
-    parser.add_argument('-v', '--verbosity', action='count', default=0,
-                        help='increase output verbosity')
+                        help='Redo training from the start regardless of'
+                             'finding checkpoint')
+    parser.add_argument('-v', '--verbosity',
+                        action='count', default=0,
+                        help='Increase output verbosity')
 
     return check_args(parser.parse_args())
 
@@ -109,7 +113,8 @@ def main():
     else:
         bot = None
 
-    gpu_options = tf.GPUOptions(allow_growth=True)
+    gpu_options = tf.GPUOptions(visible_device_list=args.gpu_id,
+                                allow_growth=True)
     session_conf = tf.ConfigProto(
         intra_op_parallelism_threads=1, inter_op_parallelism_threads=1,
         gpu_options=gpu_options,
