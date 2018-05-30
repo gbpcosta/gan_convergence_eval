@@ -2,8 +2,4 @@
 draft.py
 slack.config
 
-datasets/
-logs/
-results/
-checkpoint/
-models/
+_*/
