@@ -4,11 +4,13 @@ import os
 import time
 import tensorflow as tf
 import numpy as np
-import mmd
+import dataset
 from tqdm import tqdm
+from utils.utils import check_folder
+from utils.utils import save_images
 
-from ops import *
-from utils import *
+import mmd
+# import inception_score
 
 from matplotlib.gridspec import GridSpec
 from matplotlib.ticker import FormatStrFormatter
@@ -17,12 +19,14 @@ import matplotlib.colors as colors
 from matplotlib import ticker
 plt.switch_backend("Agg")
 
+slim = tf.contrib.slim
+
 
 class EBGAN(object):
     model_name = "EBGAN"     # name for checkpoint
 
     def __init__(self, sess, epoch, batch_size, z_dim, dataset_name,
-                 checkpoint_dir, result_dir, log_dir, bot, verbosity):
+                 checkpoint_dir, result_dir, log_dir, bot, redo, verbosity):
         self.sess = sess
         self.dataset_name = dataset_name
         self.checkpoint_dir = checkpoint_dir
@@ -31,14 +35,13 @@ class EBGAN(object):
         self.epoch = epoch
         self.batch_size = batch_size
         self.bot = bot
+        self.redo = redo
         self.verbosity = verbosity
 
-        if dataset_name == 'mnist' or dataset_name == 'fashion-mnist':
+        if self.dataset_name in ['mnist', 'fashion-mnist']:
             # parameters
             self.input_height = 28
             self.input_width = 28
-            self.output_height = 28
-            self.output_width = 28
 
             self.z_dim = z_dim         # dimension of noise-vector
             self.c_dim = 1
@@ -58,10 +61,46 @@ class EBGAN(object):
             self.sample_num = 64  # number of generated images to be saved
 
             # load mnist
-            self.data_X, self.data_y = load_mnist(self.dataset_name)
+            self.ds = dataset.MNIST(self.batch_size)
+            self.num_batches = \
+                np.ceil(self.ds.N_TRAIN_SAMPLES / self.batch_size)
 
-            # get number of batches for a single epoch
-            self.num_batches = len(self.data_X) // self.batch_size
+            # architecture hyper parameters
+            self.data_format = 'NHWC'
+            self.code_dim = 32
+
+        elif dataset_name.lower() in ['celeba']:
+            # parameters
+            self.input_height = 64
+            self.input_width = 64
+
+            self.z_dim = z_dim         # dimension of noise-vector
+            self.c_dim = 3
+
+            # EBGAN Parameter
+            self.pt_loss_weight = 0.1
+            self.margin = max(1, self.batch_size/64.)
+            # margin for loss function
+            # usually margin of 1 is enough, but for large batch size it must
+            # be larger than 1
+
+            # train
+            self.learning_rate = 0.0002
+            self.beta1 = 0.5
+
+            # test
+            self.sample_num = 64  # number of generated images to be saved
+
+            # load CelebA
+            self.ds = dataset.CelebA(self.batch_size)
+            self.num_batches = self.ds.N_TRAIN_SAMPLES // self.batch_size
+
+            # architecture hyper parameters
+            self.repeat_num = int(np.log2(self.input_height)) - 2
+            self.hidden_num = 128
+            self.data_format = 'NHWC'
+            self.code_dim = 64
+
         else:
             raise NotImplementedError
 
@@ -75,7 +114,7 @@ class EBGAN(object):
         faces. Shape [batch_size, embeddings_dim]
         :return: pull away term loss
         """
-        norm = tf.sqrt(tf.reduce_sum(tf.square(embeddings), 1, keep_dims=True))
+        norm = tf.sqrt(tf.reduce_sum(tf.square(embeddings), 1, keepdims=True))
         normalized_embeddings = embeddings / norm
         similarity = tf.matmul(
             normalized_embeddings, normalized_embeddings, transpose_b=True)
@@ -85,89 +124,328 @@ class EBGAN(object):
         return pt_loss
 
     def discriminator(self, x, is_training=True, reuse=False):
-        if self.dataset_name == 'mnist' or \
-           self.dataset_name == 'fashion-mnist':
+        if self.dataset_name in ['mnist', 'fashion-mnist']:
             # It must be Auto-Encoder style architecture
-            # Architecture : (64)4c2s-FC32-FC64*14*14_BR-(1)4dc2s_S
-            with tf.variable_scope("discriminator", reuse=reuse):
+            # Architecture : (64)4c2s-FC32_BR-FC64*14*14_BR-(1)4dc2s_S
+            with tf.variable_scope("discriminator", reuse=reuse) as vs:
+                # net = tf.nn.relu(conv2d(x, 64, 4, 4, 2, 2, name='d_conv1'))
+                net = slim.conv2d(x, 64, 4, 2,
+                                  weights_initializer=tf.truncated_normal_initializer(stddev=0.02),
+                                  biases_initializer=tf.constant_initializer(0.0),
+                                  activation_fn=tf.nn.relu)
 
-                net = tf.nn.relu(conv2d(x, 64, 4, 4, 2, 2, name='d_conv1'))
-                net = tf.reshape(net, [self.batch_size, -1])
-                code = (linear(net, 32, scope='d_fc6'))
+                # net = tf.reshape(net, [self.batch_size, -1])
+                net = slim.flatten(net)
+
+                # code = tf.nn.relu(bn(linear(net, 32, scope='d_fc2'),
+                #                      is_training=is_training, scope='d_bn2'))
+                net = code = \
+                    slim.fully_connected(net, self.code_dim,
+                                         activation_fn=None,
+                                         weights_initializer=tf.random_normal_initializer(stddev=0.02),
+                                         biases_initializer=tf.constant_initializer(0.0))
                 # bn and relu are excluded since code is used in pullaway_loss
-                net = tf.nn.relu(bn(linear(code, 64 * 14 * 14, scope='d_fc3'),
-                                    is_training=is_training, scope='d_bn3'))
-                net = tf.reshape(net, [self.batch_size, 14, 14, 64])
-                out = tf.nn.sigmoid(deconv2d(net, [self.batch_size, 28, 28, 1],
-                                             4, 4, 2, 2, name='d_dc5'))
 
-                # recon loss
-                recon_error = \
-                    tf.sqrt(2 * tf.nn.l2_loss(out - x)) / self.batch_size
-                return out, recon_error, code
+                # net = tf.nn.relu(
+                #   bn(linear(code, 64 * 14 * 14, scope='d_fc3'),
+                #      is_training=is_training, scope='d_bn3'))
+                net = slim.batch_norm(
+                    slim.fully_connected(
+                        net,
+                        64 *
+                        (self.input_width // 2) *
+                        (self.input_height // 2),
+                        activation_fn=None,
+                        weights_initializer=tf.random_normal_initializer(stddev=0.02),
+                        biases_initializer=tf.constant_initializer(0.0)),
+                    is_training=is_training,
+                    center=True, scale=True,
+                    epsilon=1e-5,
+                    decay=0.9,
+                    updates_collections=None,
+                    activation_fn=tf.nn.relu)
+
+                # net = tf.reshape(net, [self.batch_size, 14, 14, 64])
+                net = tf.reshape(net,
+                                 [-1,
+                                  (self.input_width // 2),
+                                  (self.input_height // 2),
+                                  64])
+
+                # out = tf.nn.sigmoid(deconv2d(net,
+                #   [self.batch_size, 28, 28, 1],
+                #   4, 4, 2, 2, name='d_dc4'))
+                out = slim.conv2d_transpose(net, self.c_dim, 4, 2,
+                                            weights_initializer=tf.random_normal_initializer(stddev=0.02),
+                                            biases_initializer=tf.constant_initializer(0.0),
+                                            activation_fn=tf.nn.sigmoid)
+
+                d_vars = tf.contrib.framework.get_variables(vs)
+                return out, code, d_vars
+
+        elif self.dataset_name in ['celeba']:
+            # Architecture from: https://git.io/vhqBv
+            with tf.variable_scope("discriminator", reuse=reuse) as vs:
+                # Encoder
+                net = slim.conv2d(x, self.hidden_num, 3, 1,
+                                  activation_fn=tf.nn.elu,
+                                  data_format=self.data_format)
+
+                prev_channel_num = self.hidden_num
+                for idx in range(self.repeat_num):
+                    channel_num = self.hidden_num * (idx + 1)
+
+                    net = slim.conv2d(net, channel_num, 3, 1,
+                                      activation_fn=tf.nn.elu,
+                                      data_format=self.data_format)
+
+                    net = slim.conv2d(net, channel_num, 3, 1,
+                                      activation_fn=tf.nn.elu,
+                                      data_format=self.data_format)
+
+                    if idx < self.repeat_num - 1:
+                        net = slim.conv2d(net, channel_num, 3, 2,
+                                          activation_fn=tf.nn.elu,
+                                          data_format=self.data_format)
+
+                net = tf.reshape(net,
+                                 [-1,
+                                  np.prod(
+                                    [(self.input_width // 8),
+                                     (self.input_height // 8),
+                                     channel_num])])
+                code = net = slim.fully_connected(net, self.code_dim,
+                                                  activation_fn=None)
+
+                # Decoder
+                num_output = int(np.prod(
+                    [(self.input_width // 8),
+                     (self.input_height // 8),
+                     self.hidden_num]))
+
+                net = slim.fully_connected(net, num_output, activation_fn=None)
+                net = tf.reshape(net,
+                                 [-1,
+                                  (self.input_width // 8),
+                                  (self.input_height // 8),
+                                  self.hidden_num])
+
+                for idx in range(self.repeat_num):
+                    net = slim.conv2d(net, self.hidden_num, 3, 1,
+                                      activation_fn=tf.nn.elu,
+                                      data_format=self.data_format)
+
+                    net = slim.conv2d(net, self.hidden_num, 3, 1,
+                                      activation_fn=tf.nn.elu,
+                                      data_format=self.data_format)
+
+                    if idx < self.repeat_num - 1:
+                        # upscale image (height and width) by a factor of 2
+                        net = \
+                            tf.image.resize_nearest_neighbor(
+                                net,
+                                tf.multiply(tf.shape(net)[1:3], (2, 2)))
+
+                out = slim.conv2d(net, self.c_dim, 3, 1, activation_fn=None,
+                                  data_format=self.data_format)
+
+                d_vars = tf.contrib.framework.get_variables(vs)
+                return out, code, d_vars
         else:
             raise NotImplementedError
 
     def generator(self, z, is_training=True, reuse=False):
-        if self.dataset_name == 'mnist' or \
-           self.dataset_name == 'fashion-mnist':
+        if self.dataset_name in ['mnist', 'fashion-mnist']:
             # Network Architecture is exactly same as in infoGAN
             # (https://arxiv.org/abs/1606.03657)
             # Architecture : FC1024_BR-FC7x7x128_BR-(64)4dc2s_BR-(1)4dc2s_S
-            with tf.variable_scope("generator", reuse=reuse):
-                net = tf.nn.relu(bn(linear(z, 1024, scope='g_fc1'),
-                                 is_training=is_training, scope='g_bn1'))
-                net = tf.nn.relu(bn(linear(net, 128 * 7 * 7, scope='g_fc2'),
-                                 is_training=is_training, scope='g_bn2'))
-                net = tf.reshape(net, [self.batch_size, 7, 7, 128])
-                net = tf.nn.relu(
-                    bn(deconv2d(net, [self.batch_size, 14, 14, 64], 4, 4, 2, 2,
-                                name='g_dc3'),
-                       is_training=is_training, scope='g_bn3'))
+            with tf.variable_scope("generator", reuse=reuse) as vs:
+                # net = tf.nn.relu(bn(linear(z, 1024, scope='g_fc1'),
+                #                     is_training=is_training, scope='g_bn1'))
+                net = slim.batch_norm(
+                    slim.fully_connected(z, 1024, activation_fn=None,
+                                         weights_initializer=tf.random_normal_initializer(stddev=0.02),
+                                         biases_initializer=tf.constant_initializer(0.0)),
+                    is_training=is_training,
+                    center=True, scale=True,
+                    epsilon=1e-5,
+                    decay=0.9,
+                    updates_collections=None,
+                    activation_fn=tf.nn.relu)
 
-                out = tf.nn.sigmoid(deconv2d(net, [self.batch_size, 28, 28, 1],
-                                             4, 4, 2, 2, name='g_dc4'))
+                # net = tf.nn.relu(bn(linear(net, 128 * 7 * 7, scope='g_fc2'),
+                #                  is_training=is_training, scope='g_bn2'))
+                net = slim.batch_norm(
+                    slim.fully_connected(net,
+                                         128 *
+                                         (self.input_width // 4) *
+                                         (self.input_height // 4),
+                                         activation_fn=None,
+                                         weights_initializer=tf.random_normal_initializer(stddev=0.02),
+                                         biases_initializer=tf.constant_initializer(0.0)),
+                    is_training=is_training,
+                    center=True, scale=True,
+                    epsilon=1e-5,
+                    decay=0.9,
+                    updates_collections=None,
+                    activation_fn=tf.nn.relu)
 
-                return out
+                # net = tf.reshape(net, [self.batch_size, 7, 7, 128])
+                net = tf.reshape(net,
+                                 [-1,
+                                  (self.input_width // 4),
+                                  (self.input_height // 4),
+                                  128])
+
+                # net = tf.nn.relu(
+                #     bn(deconv2d(net,
+                #                 [self.batch_size, 14, 14, 64], 4, 4, 2, 2,
+                #                 name='g_dc3'),
+                #         is_training=is_training, scope='g_bn3'))
+                net = slim.batch_norm(
+                    slim.conv2d_transpose(
+                        net, 64, 4, 2,
+                        activation_fn=None,
+                        data_format=self.data_format,
+                        weights_initializer=tf.random_normal_initializer(stddev=0.02),
+                        biases_initializer=tf.constant_initializer(0.0)),
+                    is_training=is_training,
+                    center=True, scale=True,
+                    epsilon=1e-5,
+                    decay=0.9,
+                    updates_collections=None,
+                    activation_fn=tf.nn.relu)
+
+                # out = tf.nn.sigmoid(deconv2d(net,
+                #   [self.batch_size, 28, 28, 1],
+                #                              4, 4, 2, 2, name='g_dc4'))
+                out = slim.conv2d_transpose(
+                    net, self.c_dim, 4, 2,
+                    data_format=self.data_format,
+                    weights_initializer=tf.random_normal_initializer(stddev=0.02),
+                    biases_initializer=tf.constant_initializer(0.0),
+                    activation_fn=tf.nn.sigmoid)
+
+                g_vars = tf.contrib.framework.get_variables(vs)
+                return out, g_vars
+
+        elif self.dataset_name in ['celeba']:
+            # Architecture from: https://git.io/vhqBv
+            with tf.variable_scope("generator", reuse=reuse) as vs:
+                num_output = int(np.prod(
+                    [(self.input_width // 8),
+                     (self.input_height // 8),
+                     self.hidden_num]))
+                net = slim.fully_connected(z, num_output, activation_fn=None)
+                net = tf.reshape(net,
+                                 [-1,
+                                  (self.input_width // 8),
+                                  (self.input_height // 8),
+                                  self.hidden_num])
+
+                for idx in range(self.repeat_num):
+                    net = slim.conv2d(net, self.hidden_num, 3, 1,
+                                      activation_fn=tf.nn.elu,
+                                      data_format=self.data_format)
+
+                    net = slim.conv2d(net, self.hidden_num, 3, 1,
+                                      activation_fn=tf.nn.elu,
+                                      data_format=self.data_format)
+
+                    if idx < self.repeat_num - 1:
+                        # upscale image (height and width) by a factor of 2
+                        net = \
+                            tf.image.resize_nearest_neighbor(
+                                net,
+                                tf.multiply(tf.shape(net)[1:3], (2, 2)))
+
+                out = slim.conv2d(net, self.c_dim, 3, 1, activation_fn=None,
+                                  data_format=self.data_format)
+
+                g_vars = tf.contrib.framework.get_variables(vs)
+                return out, g_vars
         else:
             raise NotImplementedError
 
     def build_model(self):
-        # some parameters
-        image_dims = [self.input_height, self.input_width, self.c_dim]
-        bs = self.batch_size
-
         """ Graph Input """
+
         # images
-        self.inputs = tf.placeholder(tf.float32, [bs] + image_dims,
-                                     name='real_images')
+        # create general iterator
+        self.iterator = tf.data.Iterator.from_structure(self.ds.output_types,
+                                                        self.ds.output_shapes)
+
+        self.training_init_op = \
+            self.iterator.make_initializer(self.ds.train_ds)
+
+        if self.ds.valid_ds is not None:
+            self.validation_init_op = \
+                self.iterator.make_initializer(self.ds.valid_ds)
+
+        if self.ds.test_ds is not None:
+            self.testing_init_op = \
+                self.iterator.make_initializer(self.ds.test_ds)
+
+        next_element, _ = self.iterator.get_next()
+        self.inputs = next_element
 
         # noises
-        self.z = tf.placeholder(tf.float32, [bs, self.z_dim], name='z')
+        self.z = tf.random_normal([self.batch_size, self.z_dim])
 
         """ Loss Function """
 
-        # output of D for real images
-        D_real_img, D_real_err, D_real_code = \
-            self.discriminator(self.inputs, is_training=True, reuse=False)
-
         # output of D for fake images
-        G = self.generator(self.z, is_training=True, reuse=False)
-        D_fake_img, D_fake_err, D_fake_code =  \
-            self.discriminator(G, is_training=True, reuse=True)
+        G, g_vars = self.generator(self.z, is_training=True, reuse=False)
+
+        # D_out, D_code, d_vars = \
+        #     self.discriminator(tf.concat([self.inputs, G], axis=0),
+        #                        is_training=True, reuse=False)
+        #
+        # self.D_real_img, self.D_fake_img = \
+        #     tf.split(self.ds.denorm_img(D_out), 2)
+        # self.D_real_code, self.D_fake_code = \
+        #     tf.split(D_code, 2)
+        #
+        # D_real_err = tf.reduce_mean(
+        #     tf.abs(self.D_real_img -
+        #            self.ds.denorm_img(self.inputs)))
+        # D_fake_err = tf.reduce_mean(
+        #     tf.abs(self.D_fake_img -
+        #            self.ds.denorm_img(G)))
+
+        self.D_real_img, self.D_real_code, d_vars = \
+            self.discriminator(self.inputs,
+                               is_training=True, reuse=False)
+        self.D_fake_img, self.D_fake_code, _ = \
+            self.discriminator(G,
+                               is_training=True, reuse=True)
+
+        D_real_err = \
+            tf.sqrt(2 *
+                    tf.nn.l2_loss(self.D_real_img -
+                                  self.inputs)) \
+            / self.batch_size
+        D_fake_err = \
+            tf.sqrt(2 *
+                    tf.nn.l2_loss(self.D_fake_img -
+                                  G)) \
+            / self.batch_size
 
         # get loss for discriminator
         self.d_loss = D_real_err + tf.maximum(self.margin - D_fake_err, 0)
 
         # get loss for generator
         self.g_loss = D_fake_err + \
-            self.pt_loss_weight*self.pullaway_loss(D_fake_code)
+            self.pt_loss_weight * self.pullaway_loss(self.D_fake_code)
+
+        # self.g_loss_sum = tf.summary.scalar("g_loss", self.g_loss)
+        # self.d_loss_sum = tf.summary.scalar("d_loss", self.d_loss)
 
         """ Training """
         # divide trainable variables into a group for D and a group for G
-        t_vars = tf.trainable_variables()
-        d_vars = [var for var in t_vars if 'd_' in var.name]
-        g_vars = [var for var in t_vars if 'g_' in var.name]
+        # t_vars = tf.trainable_variables()
+        # d_vars = [var for var in t_vars if 'd_' in var.name]
+        # g_vars = [var for var in t_vars if 'g_' in var.name]
 
         # optimizers
         with tf.control_dependencies(
@@ -181,8 +459,14 @@ class EBGAN(object):
 
         """" Testing """
         # for test
-        self.fake_images = self.generator(self.z, is_training=False,
-                                          reuse=True)
+        self.sample_z = tf.constant(
+            np.random.normal(loc=0.0, scale=1.0,
+                             size=(self.batch_size, self.z_dim))
+            .astype(np.float32))
+
+        fake_images, _ = self.generator(self.sample_z, is_training=False,
+                                        reuse=True)
+        self.fake_images = self.ds.denorm_img(fake_images)
 
         """ Summary """
         d_loss_real_sum = tf.summary.scalar("d_error_real", D_real_err)
@@ -195,23 +479,11 @@ class EBGAN(object):
         self.d_sum = tf.summary.merge([d_loss_real_sum, d_loss_sum])
 
         """ MMD """
-        self.generated_samples = tf.placeholder(tf.float32,
-                                                [None, self.output_height,
-                                                 self.output_width,
-                                                 self.c_dim],
-                                                name="mmd_generatedsamples")
-        self.training_data = tf.placeholder(tf.float32,
-                                            [None, self.input_height,
-                                             self.input_width, self.c_dim],
-                                            name="mmd_trainingdata")
+        aux_1 = tf.reshape(G, [-1, self.input_width * self.input_height *
+                               self.c_dim])
 
-        aux_1 = tf.reshape(self.generated_samples,
-                           [-1, self.output_width * self.output_height *
-                            self.c_dim])
-
-        aux_2 = tf.reshape(self.training_data,
-                           [-1, self.input_width * self.input_height *
-                            self.c_dim])
+        aux_2 = tf.reshape(self.inputs, [-1, self.input_width *
+                                         self.input_height * self.c_dim])
 
         self.log_mmd = tf.log(mmd.rbf_mmd2(aux_1, aux_2))
 
@@ -219,10 +491,6 @@ class EBGAN(object):
 
         # initialize all variables
         tf.global_variables_initializer().run()
-
-        # graph inputs for visualize training results
-        self.sample_z = \
-            np.random.uniform(-1, 1, size=(self.batch_size, self.z_dim))
 
         # saver to save model
         self.saver = tf.train.Saver()
@@ -232,98 +500,108 @@ class EBGAN(object):
                                             self.model_name, self.sess.graph)
 
         # restore check-point if it exits
-        could_load, checkpoint_counter = self.load(self.checkpoint_dir)
-        if could_load:
-            start_epoch = (int)(checkpoint_counter / self.num_batches)
-            start_batch_id = \
-                checkpoint_counter - start_epoch * self.num_batches
-            counter = checkpoint_counter
-            if self.verbosity >= 1:
-                print("[*] Load SUCCESS")
+        if not self.redo:
+            could_load, checkpoint_counter = self.load(self.checkpoint_dir)
+            if could_load:
+                start_epoch = (int)(checkpoint_counter / self.num_batches)
+                start_batch_id = checkpoint_counter - start_epoch * \
+                    self.num_batches
+                counter = checkpoint_counter
+                if self.verbosity >= 1:
+                    print("[*] Load SUCCESS")
+            else:
+                start_epoch = 0
+                start_batch_id = 0
+                counter = 1
+                if self.verbosity >= 1:
+                    print("[!] Load failed...")
         else:
             start_epoch = 0
             start_batch_id = 0
             counter = 1
             if self.verbosity >= 1:
-                print("[!] Load failed...")
+                print("[!] Redo!")
 
         # plot variables
         plot_d_loss = []
         plot_g_loss = []
-        plot_M = []
+        # plot_M = []
         plot_logMMD = []
         first_it = counter
+
         # loop for epoch
         start_time = time.time()
-        for epoch in range(start_epoch, self.epoch):
+        for epoch in tqdm(range(start_epoch, self.epoch), position=1):
+            batch_number = 0
 
-            # get batch data
-            for idx in tqdm(range(start_batch_id, self.num_batches)):
-                batch_images = \
-                    self.data_X[idx*self.batch_size:(idx+1)*self.batch_size]
-                batch_z = np.random.uniform(-1, 1, [self.batch_size,
-                                            self.z_dim]).astype(np.float32)
+            pbar = tqdm(total=self.num_batches, position=0)
 
-                # update D network
-                _, summary_str, d_loss = \
-                    self.sess.run([self.d_optim, self.d_sum, self.d_loss],
-                                  feed_dict={self.inputs: batch_images,
-                                             self.z: batch_z})
-                self.writer.add_summary(summary_str, counter)
+            self.sess.run(self.training_init_op)
+            while True:
+                try:
+                    # update D and G networks
+                    _, summary_str_d, d_loss, \
+                        _, summary_str_g, g_loss, \
+                        logMDD_value = \
+                        self.sess.run([
+                            self.d_optim, self.d_sum, self.d_loss,
+                            self.g_optim, self.g_sum, self.g_loss,
+                            self.log_mmd])
+                    self.writer.add_summary(summary_str_d, counter)
+                    self.writer.add_summary(summary_str_g, counter)
 
-                # update G network
-                _, summary_str, g_loss = \
-                    self.sess.run([self.g_optim, self.g_sum, self.g_loss],
-                                  feed_dict={self.z: batch_z})
-                self.writer.add_summary(summary_str, counter)
+                    plot_d_loss.append(d_loss)
+                    plot_g_loss.append(g_loss)
+                    plot_logMMD.append(logMDD_value)
 
-                plot_d_loss.append(d_loss)
-                plot_g_loss.append(g_loss)
-                # plot_M.append(M_value)
+                    # display training status
+                    counter += 1
+                    pbar.update(1)
+                    batch_number += 1
+                    if self.verbosity >= 4:
+                        print("Epoch: [%2d] [%4d] time: %4.4f,"
+                              " d_loss: %.8f, g_loss: %.8f"
+                              % (epoch, batch_number,
+                                 time.time() - start_time,
+                                 d_loss, g_loss))
 
-                # display training status
-                counter += 1
-                # if self.verbosity >= 2:
-                #     print("Epoch: [%2d] [%4d/%4d] time: %4.4f, "
-                #           "d_loss: %.8f, g_loss: %.8f"
-                #           % (epoch, idx, self.num_batches, time.time() -
-                #              start_time, d_loss, g_loss))
 
-                # if np.mod(counter, 100) == 0:
-                samples = self.sess.run(self.fake_images,
-                                        feed_dict={self.z: self.sample_z})
+                    # save training results for every 300 steps
+                    # save training results for every 300 steps
+                    if self.verbosity >= 3 and \
+                       self.dataset_name in \
+                            ['mnist', 'fashion-mnist', 'celeba'] and \
+                       np.mod(counter, 300) == 0:
 
-                logMDD_value = \
-                    self.sess.run(self.log_mmd,
-                                  feed_dict={self.generated_samples: samples,
-                                             self.training_data: batch_images})
+                        samples = \
+                            self.sess.run(self.fake_images)
 
-                plot_logMMD.append(logMDD_value)
+                        tot_num_samples = min(self.sample_num, self.batch_size)
+                        manifold_h = int(np.floor(np.sqrt(tot_num_samples)))
+                        manifold_w = int(np.floor(np.sqrt(tot_num_samples)))
 
-                # save training results for every 300 steps
-                if (self.dataset_name == 'mnist' or
-                    self.dataset_name == 'fashion-mnist') \
-                        and np.mod(counter, 300) == 0:
-                    samples = self.sess.run(self.fake_images,
-                                            feed_dict={self.z: self.sample_z})
-                    tot_num_samples = min(self.sample_num, self.batch_size)
-                    manifold_h = int(np.floor(np.sqrt(tot_num_samples)))
-                    manifold_w = int(np.floor(np.sqrt(tot_num_samples)))
+                        save_images(
+                            samples[:manifold_h * manifold_w, :, :, :],
+                            [manifold_h, manifold_w],
+                            os.path.join(
+                                check_folder(os.path.join(os.getcwd(),
+                                                          self.result_dir,
+                                                          self.model_dir)),
+                                self.model_name +
+                                '_train_{:04d}_{:04d}.png'
+                                .format(epoch, batch_number)))
 
-                    save_images(
-                        samples[:manifold_h * manifold_w, :, :, :],
-                        [manifold_h, manifold_w],
-                        './' +
-                        check_folder(self.result_dir + '/' + self.model_dir) +
-                        '/' + self.model_name +
-                        '_train_{:04d}_{:04d}.png'.format(epoch, idx))
+                        if self.bot is not None:
+                            self.bot.send_file(
+                                os.path.join(os.getcwd(),
+                                             self.result_dir, self.model_dir,
+                                             self.model_name +
+                                             '_train_{:04d}_{:04d}.png'
+                                             .format(epoch, batch_number)))
 
-                    if self.verbosity >= 3 and self.bot is not None:
-                        self.bot.send_file(
-                            os.path.join(self.result_dir, self.model_dir,
-                                         self.model_name +
-                                         '_train_{:04d}_{:04d}.png'
-                                         .format(epoch, idx)))
+                except tf.errors.OutOfRangeError:
+                    pbar.close()
+                    break
 
             if self.verbosity >= 2:
                 print("Epoch [%02d]: time: %4.4f,"
@@ -358,18 +636,13 @@ class EBGAN(object):
         self.save(self.checkpoint_dir, counter)
 
     def visualize_results(self, epoch):
-        if self.dataset_name == 'mnist' or \
-           self.dataset_name == 'fashion-mnist':
+        if self.dataset_name in ['mnist', 'fashion-mnist', 'celeba']:
             tot_num_samples = min(self.sample_num, self.batch_size)
             image_frame_dim = int(np.floor(np.sqrt(tot_num_samples)))
 
             """ random condition, random noise """
 
-            z_sample = \
-                np.random.uniform(-1, 1, size=(self.batch_size, self.z_dim))
-
-            samples = self.sess.run(self.fake_images,
-                                    feed_dict={self.z: z_sample})
+            samples = self.sess.run(self.fake_images)
 
             save_images(
                 samples[:image_frame_dim * image_frame_dim, :, :, :],
@@ -388,13 +661,14 @@ class EBGAN(object):
 
     def plot_metrics(self, metrics_list, iterations_list,
                      metric_names=None, n_cols=2, legend=False, x_label=None,
-                     y_label=None, wspace=None, hspace=None):
+                     y_label=None, wspace=0.6, hspace=0.25,
+                     fig_wsize=16, fig_hsize=16):
         # cmap=plt.cm.tab20
         assert isinstance(metrics_list, (list, tuple)) and \
             not isinstance(metrics_list, str)
 
         # fig, ax1 = plt.subplots(1,1, figsize=(10,8))
-        fig = plt.figure(figsize=(12, 16))
+        fig = plt.figure(figsize=(fig_hsize, fig_wsize))
 
         grid_cols = n_cols
         grid_rows = int(np.ceil(len(metrics_list) / n_cols))

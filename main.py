@@ -2,6 +2,13 @@ import os
 import sys
 import numpy as np
 import random as rn
+import argparse
+import configparser
+
+os.environ["PYTHONHASHSEED"] = '42'
+os.environ["CUDA_VISIBLE_DEVICES"] = '0'
+os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'
+sys.path.insert(0, '/home/DADOS1/gabriel/random/slack-bot/')
 
 # GAN Variants
 from GAN import GAN
@@ -10,14 +17,10 @@ from WGAN_GP import WGAN_GP
 from BEGAN import BEGAN
 from EBGAN import EBGAN
 
-from utils import show_all_variables
-from utils import check_folder
+from utils.utils import show_all_variables
+from utils.utils import check_folder
 
 import tensorflow as tf
-import argparse
-import configparser
-
-sys.path.insert(0, '/home/DADOS1/gabriel/random/slack-bot/')
 
 from slackbot import SlackBot
 
@@ -25,11 +28,6 @@ from slackbot import SlackBot
 np.random.seed(42)
 rn.seed(42)
 tf.set_random_seed(42)
-session_conf = tf.ConfigProto(
-    intra_op_parallelism_threads=1, inter_op_parallelism_threads=1)
-
-os.environ["PYTHONHASHSEED"] = "42"
-os.environ["CUDA_VISIBLE_DEVICES"] = "0"
 
 
 def parse_args():
@@ -39,10 +37,10 @@ def parse_args():
     parser = argparse.ArgumentParser(description=desc)
 
     parser.add_argument('--gan_type', type=str, default='GAN',
-                        choices=['GAN', 'CGAN', 'BEGAN', 'WGAN_GP', 'EBGAN'],
+                        choices=['GAN', 'BEGAN', 'WGAN_GP', 'EBGAN'],
                         help='The type of GAN', required=True)
     parser.add_argument('--dataset', type=str, default='mnist',
-                        choices=['mnist', 'fashion-mnist', 'celebA'],
+                        choices=['mnist', 'celeba'],
                         help='The name of dataset')
     parser.add_argument('--epoch', type=int, default=20,
                         help='The number of epochs to run')
@@ -50,13 +48,16 @@ def parse_args():
                         help='The size of batch')
     parser.add_argument('--z_dim', type=int, default=100,
                         help='Dimension of noise vector')
-    parser.add_argument('--checkpoint_dir', type=str, default='checkpoint',
+    parser.add_argument('--checkpoint_dir', type=str,
+                        default='_outputs/checkpoint',
                         help='Directory name to save the checkpoints')
-    parser.add_argument('--result_dir', type=str, default='results',
+    parser.add_argument('--result_dir', type=str, default='_outputs/results',
                         help='Directory name to save the generated images')
-    parser.add_argument('--log_dir', type=str, default='logs',
+    parser.add_argument('--log_dir', type=str, default='_outputs/logs',
                         help='Directory name to save training logs')
-    parser.add_argument('--slack', type=bool, default=False,
+    parser.add_argument('--slack', action='store_true',
+                        help='Activate Slack bot!')
+    parser.add_argument('--redo', action='store_true',
                         help='Activate Slack bot!')
     parser.add_argument('-v', '--verbosity', action='count', default=0,
                         help='increase output verbosity')
@@ -108,9 +109,15 @@ def main():
     else:
         bot = None
 
+    gpu_options = tf.GPUOptions(allow_growth=True)
+    session_conf = tf.ConfigProto(
+        intra_op_parallelism_threads=1, inter_op_parallelism_threads=1,
+        gpu_options=gpu_options,
+        allow_soft_placement=True)
+
     # open session
     models = [GAN, CGAN, WGAN_GP, BEGAN, EBGAN]
-    with tf.Session(config=tf.ConfigProto(allow_soft_placement=True)) as sess:
+    with tf.Session(config=session_conf) as sess:
         # declare instance for GAN
 
         gan = None
@@ -125,6 +132,7 @@ def main():
                             result_dir=args.result_dir,
                             log_dir=args.log_dir,
                             bot=bot,
+                            redo=args.redo,
                             verbosity=args.verbosity)
         if gan is None:
             print("<!channel> ERROR!\n\n"
