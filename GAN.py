@@ -10,7 +10,7 @@ from utils.utils import check_folder
 from utils.utils import save_images
 
 import mmd
-import inception_score_np
+import inception_score
 
 from matplotlib.gridspec import GridSpec
 from matplotlib.ticker import FormatStrFormatter
@@ -311,7 +311,7 @@ class GAN(object):
         inception_images = \
             np.concatenate(inception_images, axis=0)
 
-        return inception_score_np.get_inception_score(inception_images)
+        return inception_score.get_inception_score(inception_images)
 
     def build_model(self):
         self.define_input()
