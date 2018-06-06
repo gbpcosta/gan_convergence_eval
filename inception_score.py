@@ -1,102 +1,122 @@
-# source: https://git.io/vpdeD
+'''
+From https://github.com/tsc2017/inception-score
+Code derived from
+https://github.com/openai/improved-gan/blob/master/inception_score/model.py
 
-# Code derived from
-# tensorflow/tensorflow/models/image/imagenet/classify_image.py
+Args:
+    images: A numpy array with values ranging from -1 to 1 and shape in the
+            form [N, 3, HEIGHT, WIDTH] where N, HEIGHT and WIDTH can be
+            arbitrary.
+    splits: The number of splits of the images, default is 10.
+Returns:
+    mean and standard deviation of the inception across the splits.
+'''
 
-import os.path
-import sys
-import tarfile
-
-import numpy as np
-from six.moves import urllib
 import tensorflow as tf
-import glob
-import scipy.misc
-import math
+import os
 import sys
+import functools
+import numpy as np
+import math
+import time
+from tensorflow.python.ops import array_ops
+from tensorflow.python.ops import functional_ops
+tfgan = tf.contrib.gan
 
-MODEL_DIR = '/tmp/imagenet'
-DATA_URL = 'http://download.tensorflow.org/models/' \
-           'image/imagenet/inception-2015-12-05.tgz'
-softmax = None
+
+def inception_logits(batch, num_splits=1):
+    with tf.variable_scope("inception", reuse=tf.AUTO_REUSE):
+        preprocessed_images = tfgan.eval.preprocess_image(batch)
+        logits = tfgan.eval.run_inception(preprocessed_images)
+    return logits
 
 
-# Call this function with list of images. Each of elements should be a
-# numpy array with values ranging from 0 to 255.
-def get_inception_score(images, splits=10):
-    assert(type(images) == list)
-    assert(type(images[0]) == np.ndarray)
-    assert(len(images[0].shape) == 3)
-    assert(np.max(images[0]) > 10)
-    assert(np.min(images[0]) >= 0.0)
-    inps = []
-    for img in images:
-        img = img.astype(np.float32)
-        inps.append(np.expand_dims(img, 0))
-    bs = 1
-    with tf.Session() as sess:
+def get_inception_probs(images, batch_size=50, gpu_id='0'):
+    ds_images = \
+        tf.data.Dataset.from_tensor_slices((images)) \
+        .shuffle(5000) \
+        .apply(tf.contrib.data.batch_and_drop_remainder(batch_size))
+
+    ds_images_iterator = ds_images.make_initializable_iterator()
+
+    ds_images_init_op = ds_images_iterator.initializer
+    ds_images_next = ds_images_iterator.get_next()
+
+    logits = inception_logits(ds_images_next)
+
+    gpu_options = tf.GPUOptions(visible_device_list=gpu_id,
+                                allow_growth=True)
+    session_conf = tf.ConfigProto(
+        intra_op_parallelism_threads=1, inter_op_parallelism_threads=1,
+        gpu_options=gpu_options,
+        allow_soft_placement=True)
+
+    with tf.Session(config=session_conf) as sess:
+        sess.run(ds_images_init_op)
         preds = []
-        n_batches = int(math.ceil(float(len(inps)) / float(bs)))
-        for i in range(n_batches):
-            sys.stdout.write(".")
-            sys.stdout.flush()
-            inp = inps[(i * bs):min((i + 1) * bs, len(inps))]
-            inp = np.concatenate(inp, 0)
-            pred = sess.run(softmax, {'ExpandDims:0': inp})
-            preds.append(pred)
-        preds = np.concatenate(preds, 0)
-        scores = []
-        for i in range(splits):
-            part = preds[(i * preds.shape[0] // splits):
-                         ((i + 1) * preds.shape[0] // splits), :]
-            kl = part * (np.log(part) - np.log(
-                np.expand_dims(np.mean(part, 0), 0)))
-            kl = np.mean(np.sum(kl, 1))
-            scores.append(np.exp(kl))
-        return np.mean(scores), np.std(scores)
+        while True:
+            start_time = time.time()
+            try:
+                pred = sess.run(logits)
+                preds.append(pred)
+            except tf.errors.OutOfRangeError:
+                preds = np.concatenate(preds, 0)
+                preds = np.exp(preds)/np.sum(np.exp(preds), 1, keepdims=True)
+                break
+
+    return preds
 
 
-# This function is called automatically.
-def _init_inception():
-    global softmax
-    if not os.path.exists(MODEL_DIR):
-        os.makedirs(MODEL_DIR)
-    filename = DATA_URL.split('/')[-1]
-    filepath = os.path.join(MODEL_DIR, filename)
-    if not os.path.exists(filepath):
-        def _progress(count, block_size, total_size):
-            sys.stdout.write('\r>> Downloading %s %.1f%%' % (
-              filename, float(count * block_size) / float(total_size) * 100.0))
-            sys.stdout.flush()
-        filepath, _ = urllib.request.urlretrieve(DATA_URL, filepath, _progress)
-        print()
-        statinfo = os.stat(filepath)
-        print('Succesfully downloaded', filename, statinfo.st_size, 'bytes.')
-    tarfile.open(filepath, 'r:gz').extractall(MODEL_DIR)
-    with tf.gfile.FastGFile(os.path.join(
-      MODEL_DIR, 'classify_image_graph_def.pb'), 'rb') as f:
-        graph_def = tf.GraphDef()
-        graph_def.ParseFromString(f.read())
-        _ = tf.import_graph_def(graph_def, name='')
-    # Works with an arbitrary minibatch size.
-    with tf.Session() as sess:
-        pool3 = sess.graph.get_tensor_by_name('pool_3:0')
-        ops = pool3.graph.get_operations()
-        for op_idx, op in enumerate(ops):
-            for o in op.outputs:
-                shape = o.get_shape()
-                shape = [s.value for s in shape]
-                new_shape = []
-                for j, s in enumerate(shape):
-                    if s == 1 and j == 0:
-                        new_shape.append(None)
-                    else:
-                        new_shape.append(s)
-                o.set_shape(tf.TensorShape(new_shape))
-    w = sess.graph.get_operation_by_name("softmax/logits/MatMul").inputs[1]
-    logits = tf.matmul(tf.squeeze(pool3, [1, 2]), w)
-    softmax = tf.nn.softmax(logits)
+def compute_score(logits):
+    kl = logits * \
+        (tf.log(logits) - tf.log(
+            tf.expand_dims(tf.reduce_mean(logits, axis=0), axis=0)))
+    kl = tf.reduce_mean(tf.reduce_sum(kl, axis=1))
+    return tf.exp(kl)
 
 
-if softmax is None:
-    _init_inception()
+def logits2score(logits, batch_size=10000, gpu_id='0'):
+    ds_logits = \
+        tf.data.Dataset.from_tensor_slices((logits)) \
+        .shuffle(50000) \
+        .apply(tf.contrib.data.batch_and_drop_remainder(batch_size))
+    # .batch(batch_size)
+
+    ds_logits_iterator = ds_logits.make_initializable_iterator()
+
+    ds_logits_init_op = ds_logits_iterator.initializer
+    ds_logits_next = ds_logits_iterator.get_next()
+
+    scores = compute_score(ds_logits_next)
+
+    gpu_options = tf.GPUOptions(visible_device_list=gpu_id,
+                                allow_growth=True)
+    session_conf = tf.ConfigProto(
+        intra_op_parallelism_threads=1, inter_op_parallelism_threads=1,
+        gpu_options=gpu_options,
+        allow_soft_placement=True)
+
+    with tf.Session(config=session_conf) as sess:
+        sess.run(ds_logits_init_op)
+        inception_scores = []
+        while True:
+            start_time = time.time()
+            try:
+                inception_score = sess.run(scores)
+                inception_scores.append(inception_score)
+            except tf.errors.OutOfRangeError:
+                # inception_scores = np.array(inception_scores)
+                # print("TESTE ", inception_scores.shape)
+                break
+
+    return np.mean(inception_scores), np.std(inception_scores)
+
+
+def get_inception_score(images):
+    assert(type(images) == np.ndarray)
+
+    logits = get_inception_probs(images)
+    mean, std = logits2score(logits)
+    # Reference values: 11.34 for 49984 CIFAR-10 training set images,
+    # or mean=11.31, std=0.08 if in 10 splits (default).
+    return mean, std
