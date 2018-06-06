@@ -170,3 +170,15 @@ def _mmd2_and_variance(K_XX, K_XY, K_YY, const_diagonal=False, biased=False):
     )
 
     return mmd2, var_est
+
+
+def get_mmd(generated_images, real_images, log=True):
+    generated_images = tf.layers.flatten(generated_images)
+    real_images = tf.layers.flatten(real_images)
+
+    mmd_value = rbf_mmd2(generated_images, real_images)
+
+    if log:
+        return tf.log(mmd_value+1)
+    else:
+        return mmd_value
