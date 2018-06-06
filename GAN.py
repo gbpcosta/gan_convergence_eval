@@ -5,12 +5,12 @@ import time
 import tensorflow as tf
 import numpy as np
 import dataset
-from tqdm import tqdm
+from tqdm import tqdm, trange
 from utils.utils import check_folder
 from utils.utils import save_images
 
 import mmd
-# import inception_score
+import inception_score_np
 
 from matplotlib.gridspec import GridSpec
 from matplotlib.ticker import FormatStrFormatter
@@ -26,7 +26,8 @@ class GAN(object):
     model_name = "GAN"     # name for checkpoint
 
     def __init__(self, sess, epoch, batch_size, z_dim, dataset_name,
-                 checkpoint_dir, result_dir, log_dir, bot, redo, verbosity):
+                 compute_metrics_it, checkpoint_dir, result_dir,
+                 log_dir, bot, redo, verbosity):
         self.sess = sess
         self.dataset_name = dataset_name.lower()
         self.checkpoint_dir = checkpoint_dir
@@ -34,6 +35,7 @@ class GAN(object):
         self.log_dir = log_dir
         self.epoch = epoch
         self.batch_size = batch_size
+        self.compute_metrics_it = compute_metrics_it
         self.bot = bot
         self.redo = redo
         self.verbosity = verbosity
@@ -45,10 +47,6 @@ class GAN(object):
 
             self.z_dim = z_dim         # dimension of noise-vector
             self.c_dim = 1
-
-            # train
-            self.learning_rate = 0.0002
-            self.beta1 = 0.5
 
             # test
             self.sample_num = 64  # number of generated images to be saved
@@ -68,10 +66,6 @@ class GAN(object):
             self.z_dim = z_dim         # dimension of noise-vector
             self.c_dim = 3
 
-            # train
-            self.learning_rate = 0.0002
-            self.beta1 = 0.5
-
             # test
             self.sample_num = 64  # number of generated images to be saved
 
@@ -79,256 +73,17 @@ class GAN(object):
             self.ds = dataset.CelebA(self.batch_size)
             self.num_batches = self.ds.N_TRAIN_SAMPLES // self.batch_size
 
-            # architecture hyper parameters
-            self.repeat_num = int(np.log2(self.input_height)) - 2
-            self.hidden_num = 128
-            self.data_format = 'NHWC'
-
         else:
             raise NotImplementedError
 
     def discriminator(self, x, is_training=True, reuse=False):
-        if self.dataset_name in ['mnist', 'fashion-mnist']:
-            # Network Architecture is exactly same as in infoGAN
-            # (https://arxiv.org/abs/1606.03657)
-            # Architecture : (64)4c2s-(128)4c2s_BL-FC1024_BL-FC1_S
-            with tf.variable_scope("discriminator", reuse=reuse) as vs:
-
-                net = slim.conv2d(x, 64, 4, 2,
-                                  weights_initializer=tf.truncated_normal_initializer(stddev=0.02),
-                                  biases_initializer=tf.constant_initializer(0.0),
-                                  activation_fn=tf.nn.leaky_relu)
-
-                net = slim.batch_norm(
-                    slim.conv2d(net, 128, 4, 2, activation_fn=None,
-                                weights_initializer=tf.truncated_normal_initializer(stddev=0.02),
-                                biases_initializer=tf.constant_initializer(0.0)),
-                    is_training=is_training,
-                    center=True, scale=True,
-                    epsilon=1e-5,
-                    decay=0.9,
-                    updates_collections=None,
-                    activation_fn=tf.nn.leaky_relu)
-
-                net = slim.flatten(net)
-
-                net = slim.batch_norm(
-                    slim.fully_connected(net, 1024,
-                                         activation_fn=None,
-                                         weights_initializer=tf.random_normal_initializer(stddev=0.02),
-                                         biases_initializer=tf.constant_initializer(0.0)),
-                    is_training=is_training,
-                    center=True, scale=True,
-                    epsilon=1e-5,
-                    decay=0.9,
-                    updates_collections=None,
-                    activation_fn=tf.nn.leaky_relu)
-
-                out_logit = \
-                    slim.fully_connected(net, 1,
-                                         activation_fn=None,
-                                         weights_initializer=tf.random_normal_initializer(stddev=0.02),
-                                         biases_initializer=tf.constant_initializer(0.0))
-
-                out = tf.nn.sigmoid(out_logit)
-
-                d_vars = tf.contrib.framework.get_variables(vs)
-                return out, out_logit, d_vars
-
-        if self.dataset_name in ['celeba']:
-
-            with tf.variable_scope('discriminator', reuse=reuse) as vs:
-
-                net = slim.conv2d(x, 64, 5, 2,
-                                  weights_initializer=tf.truncated_normal_initializer(stddev=0.02),
-                                  biases_initializer=tf.constant_initializer(0.0),
-                                  activation_fn=tf.nn.leaky_relu,
-                                  data_format=self.data_format)
-
-                net = slim.batch_norm(
-                    slim.conv2d(net, 128, 5, 2,
-                                weights_initializer=tf.truncated_normal_initializer(stddev=0.02),
-                                biases_initializer=tf.constant_initializer(0.0),
-                                activation_fn=tf.nn.leaky_relu,
-                                data_format=self.data_format),
-                    is_training=is_training,
-                    center=True, scale=True,
-                    epsilon=1e-5,
-                    decay=0.9,
-                    updates_collections=None,
-                    activation_fn=tf.nn.leaky_relu)
-
-                net = slim.batch_norm(
-                    slim.conv2d(net, 256, 5, 2,
-                                weights_initializer=tf.truncated_normal_initializer(stddev=0.02),
-                                biases_initializer=tf.constant_initializer(0.0),
-                                activation_fn=tf.nn.leaky_relu,
-                                data_format=self.data_format),
-                    is_training=is_training,
-                    center=True, scale=True,
-                    epsilon=1e-5,
-                    decay=0.9,
-                    updates_collections=None,
-                    activation_fn=tf.nn.leaky_relu)
-
-                net = slim.batch_norm(
-                    slim.conv2d(net, 512, 5, 2,
-                                weights_initializer=tf.truncated_normal_initializer(stddev=0.02),
-                                biases_initializer=tf.constant_initializer(0.0),
-                                activation_fn=tf.nn.leaky_relu,
-                                data_format=self.data_format),
-                    is_training=is_training,
-                    center=True, scale=True,
-                    epsilon=1e-5,
-                    decay=0.9,
-                    updates_collections=None,
-                    activation_fn=tf.nn.leaky_relu)
-
-                net = slim.flatten(net)
-
-                out_logit = \
-                    slim.fully_connected(net, 1,
-                                         activation_fn=None,
-                                         weights_initializer=tf.random_normal_initializer(stddev=0.02),
-                                         biases_initializer=tf.constant_initializer(0.0))
-
-                out = tf.nn.sigmoid(out_logit)
-
-                d_vars = tf.contrib.framework.get_variables(vs)
-                return out, out_logit, d_vars
-        else:
-            raise NotImplementedError
+        raise NotImplementedError("method discriminator must be implemented")
 
     def generator(self, z, is_training=True, reuse=False):
-        if self.dataset_name in ['mnist', 'fashion-mnist']:
-            # Network Architecture is exactly same as in infoGAN
-            # (https://arxiv.org/abs/1606.03657)
-            # Architecture : FC1024_BR-FC7x7x128_BR-(64)4dc2s_BR-(1)4dc2s_S
-            with tf.variable_scope("generator", reuse=reuse) as vs:
+        raise NotImplementedError("method generator must be implemented")
 
-                net = slim.batch_norm(
-                    slim.fully_connected(z, 1024, activation_fn=None,
-                                         weights_initializer=tf.random_normal_initializer(stddev=0.02),
-                                         biases_initializer=tf.constant_initializer(0.0)),
-                    is_training=is_training,
-                    center=True, scale=True,
-                    epsilon=1e-5,
-                    decay=0.9,
-                    updates_collections=None,
-                    activation_fn=tf.nn.relu)
-
-                net = slim.batch_norm(
-                    slim.fully_connected(net,
-                                         128 *
-                                         (self.input_width // 4) *
-                                         (self.input_height // 4),
-                                         activation_fn=None,
-                                         weights_initializer=tf.random_normal_initializer(stddev=0.02),
-                                         biases_initializer=tf.constant_initializer(0.0)),
-                    is_training=is_training,
-                    center=True, scale=True,
-                    epsilon=1e-5,
-                    decay=0.9,
-                    updates_collections=None,
-                    activation_fn=tf.nn.relu)
-
-                net = tf.reshape(net,
-                                 [-1,
-                                  (self.input_width // 4),
-                                  (self.input_height // 4),
-                                  128])
-
-                net = slim.batch_norm(
-                    slim.conv2d_transpose(
-                        net, 64, 4, 2,
-                        activation_fn=None,
-                        data_format=self.data_format,
-                        weights_initializer=tf.random_normal_initializer(stddev=0.02),
-                        biases_initializer=tf.constant_initializer(0.0)),
-                    is_training=is_training,
-                    center=True, scale=True,
-                    epsilon=1e-5,
-                    decay=0.9,
-                    updates_collections=None,
-                    activation_fn=tf.nn.relu)
-
-                out = slim.conv2d_transpose(
-                    net, self.c_dim, 4, 2,
-                    activation_fn=tf.nn.sigmoid,
-                    data_format=self.data_format,
-                    weights_initializer=tf.random_normal_initializer(stddev=0.02),
-                    biases_initializer=tf.constant_initializer(0.0))
-
-                g_vars = tf.contrib.framework.get_variables(vs)
-                return out, g_vars
-
-        elif self.dataset_name in ['celeba']:
-            with tf.variable_scope('generator', reuse=reuse) as vs:
-
-                net = slim.fully_connected(z, 1024 * 4 * 4,
-                                           activation_fn=tf.nn.relu,
-                                           weights_initializer=tf.random_normal_initializer(stddev=0.02),
-                                           biases_initializer=tf.constant_initializer(0.0))
-
-                net = tf.reshape(net, [-1, 4, 4, 1024])
-
-                net = slim.batch_norm(
-                    slim.conv2d_transpose(net, 512, 5, 2,
-                                          activation_fn=None,
-                                          weights_initializer=tf.random_normal_initializer(stddev=0.02),
-                                          biases_initializer=tf.constant_initializer(0.0)),
-                    is_training=is_training,
-                    center=True, scale=True,
-                    epsilon=1e-5,
-                    decay=0.9,
-                    updates_collections=None,
-                    activation_fn=tf.nn.relu)
-
-                net = slim.batch_norm(
-                    slim.conv2d_transpose(net, 256, 5, 2,
-                                          activation_fn=None,
-                                          weights_initializer=tf.random_normal_initializer(stddev=0.02),
-                                          biases_initializer=tf.constant_initializer(0.0)),
-                    is_training=is_training,
-                    center=True, scale=True,
-                    epsilon=1e-5,
-                    decay=0.9,
-                    updates_collections=None,
-                    activation_fn=tf.nn.relu)
-
-                net = slim.batch_norm(
-                    slim.conv2d_transpose(net, 128, 5, 2,
-                                          activation_fn=None,
-                                          weights_initializer=tf.random_normal_initializer(stddev=0.02),
-                                          biases_initializer=tf.constant_initializer(0.0)),
-                    is_training=is_training,
-                    center=True, scale=True,
-                    epsilon=1e-5,
-                    decay=0.9,
-                    updates_collections=None,
-                    activation_fn=tf.nn.relu)
-
-                out = slim.batch_norm(
-                    slim.conv2d_transpose(net, self.c_dim, 4, 2,
-                                          activation_fn=None,
-                                          weights_initializer=tf.random_normal_initializer(stddev=0.02),
-                                          biases_initializer=tf.constant_initializer(0.0)),
-                    is_training=is_training,
-                    center=True, scale=True,
-                    epsilon=1e-5,
-                    decay=0.9,
-                    updates_collections=None,
-                    activation_fn=tf.nn.tanh)
-
-                g_vars = tf.contrib.framework.get_variables(vs)
-                return out, g_vars
-
-        else:
-            raise NotImplementedError
-
-    def build_model(self):
+    def define_input(self):
         """ Graph Input """
-
         # images
         # create general iterator
         self.iterator = tf.data.Iterator.from_structure(self.ds.output_types,
@@ -345,18 +100,18 @@ class GAN(object):
             self.testing_init_op = \
                 self.iterator.make_initializer(self.ds.test_ds)
 
-        next_element, _ = self.iterator.get_next()
-        self.inputs = next_element
+        self.inputs, _ = self.iterator.get_next()
 
         # noises
         self.z = tf.random_normal([self.batch_size, self.z_dim])
 
+    def define_loss_fn(self):
         """ Loss Function """
 
         # output of D for real and fake images
-        G, g_vars = self.generator(self.z, is_training=True, reuse=False)
+        G, self.g_vars = self.generator(self.z, is_training=True, reuse=False)
 
-        D_real, D_real_logits, d_vars = \
+        D_real, D_real_logits, self.d_vars = \
             self.discriminator(self.inputs,
                                is_training=True, reuse=False)
         D_fake, D_fake_logits, _ = \
@@ -387,6 +142,17 @@ class GAN(object):
             tf.nn.sigmoid_cross_entropy_with_logits(
                 logits=D_fake_logits, labels=tf.ones_like(D_fake)))
 
+        """ Summary """
+        d_loss_real_sum = tf.summary.scalar('d_loss_real', d_loss_real)
+        d_loss_fake_sum = tf.summary.scalar('d_loss_fake', d_loss_fake)
+        d_loss_sum = tf.summary.scalar('d_loss', self.d_loss)
+        g_loss_sum = tf.summary.scalar('g_loss', self.g_loss)
+
+        # final summary operations
+        self.g_sum = tf.summary.merge([d_loss_fake_sum, g_loss_sum])
+        self.d_sum = tf.summary.merge([d_loss_real_sum, d_loss_sum])
+
+    def define_optimizers(self):
         """ Training """
         # divide trainable variables into a group for D and a group for G
         # t_vars = tf.trainable_variables()
@@ -394,18 +160,18 @@ class GAN(object):
         # g_vars = [var for var in t_vars if 'g_' in var.name]
 
         # optimizers
-        print(tf.get_collection(tf.GraphKeys.UPDATE_OPS))
         with tf.control_dependencies(
                 tf.get_collection(tf.GraphKeys.UPDATE_OPS)):
 
             self.d_optim = \
                 tf.train.AdamOptimizer(self.learning_rate, beta1=self.beta1) \
-                .minimize(self.d_loss, var_list=d_vars)
+                .minimize(self.d_loss, var_list=self.d_vars)
             self.g_optim = \
-                tf.train.AdamOptimizer(5*self.learning_rate*5,
+                tf.train.AdamOptimizer(self.learning_rate,
                                        beta1=self.beta1) \
-                .minimize(self.g_loss, var_list=g_vars)
+                .minimize(self.g_loss, var_list=self.g_vars)
 
+    def define_test_sample(self):
         """" Testing """
         # for test
         self.sample_z = tf.constant(
@@ -417,24 +183,169 @@ class GAN(object):
                                         reuse=True)
         self.fake_images = self.ds.denorm_img(fake_images)
 
-        """ Summary """
-        d_loss_real_sum = tf.summary.scalar("d_loss_real", d_loss_real)
-        d_loss_fake_sum = tf.summary.scalar("d_loss_fake", d_loss_fake)
-        d_loss_sum = tf.summary.scalar("d_loss", self.d_loss)
-        g_loss_sum = tf.summary.scalar("g_loss", self.g_loss)
+    def save_test_sample(self, epoch, batch_number):
+        samples = \
+            self.sess.run(self.fake_images)
 
-        # final summary operations
-        self.g_sum = tf.summary.merge([d_loss_fake_sum, g_loss_sum])
-        self.d_sum = tf.summary.merge([d_loss_real_sum, d_loss_sum])
+        tot_num_samples = min(self.sample_num, self.batch_size)
+        manifold_h = int(np.floor(np.sqrt(tot_num_samples)))
+        manifold_w = int(np.floor(np.sqrt(tot_num_samples)))
 
+        save_images(
+            samples[:manifold_h * manifold_w, :, :, :],
+            [manifold_h, manifold_w],
+            os.path.join(
+                check_folder(os.path.join(os.getcwd(),
+                                          self.result_dir,
+                                          self.model_dir)),
+                self.model_name +
+                '_train_{:04d}_{:04d}.png'
+                .format(epoch, batch_number)))
+
+        if self.bot is not None:
+            self.bot.send_file(
+                os.path.join(os.getcwd(),
+                             self.result_dir, self.model_dir,
+                             self.model_name +
+                             '_train_{:04d}_{:04d}.png'
+                             .format(epoch, batch_number)))
+
+    def define_mmd_comp(self, n_batches=100):
         """ MMD """
-        aux_1 = tf.reshape(G, [-1, self.input_width * self.input_height *
-                               self.c_dim])
+        ds_mmd_real = self.ds.test_ds
 
-        aux_2 = tf.reshape(self.inputs, [-1, self.input_width *
-                                         self.input_height * self.c_dim])
+        ds_mmd_real = ds_mmd_real.apply(
+            tf.contrib.data.batch_and_drop_remainder(
+                n_batches))
+        ds_mmd_real_iterator = ds_mmd_real.make_initializable_iterator()
 
-        self.log_mmd = tf.log(mmd.rbf_mmd2(aux_1, aux_2))
+        self.ds_mmd_real_init_op = ds_mmd_real_iterator.initializer
+        ds_mmd_real_next, _ = ds_mmd_real_iterator.get_next()
+        ds_mmd_real_next = tf.reshape(
+            ds_mmd_real_next,
+            shape=[-1, self.input_height, self.input_width, self.c_dim])
+
+        mmd_z = tf.constant(
+            np.random.normal(loc=0.0, scale=1.0,
+                             size=(n_batches * self.batch_size, self.z_dim))
+            .astype(np.float32))
+
+        ds_mmd_z = \
+            tf.data.Dataset.from_tensor_slices((mmd_z)) \
+            .apply(tf.contrib.data.batch_and_drop_remainder(
+                n_batches * self.batch_size))
+
+        ds_mmd_z_iterator = ds_mmd_z.make_initializable_iterator()
+
+        self.ds_mmd_z_init_op = ds_mmd_z_iterator.initializer
+        ds_mmd_z_next = ds_mmd_z_iterator.get_next()
+
+        mmd_generated_images, _ = \
+            self.generator(ds_mmd_z_next,
+                           is_training=False,
+                           reuse=True)
+
+        self.log_mmd = mmd.get_mmd(mmd_generated_images,
+                                   ds_mmd_real_next,
+                                   log=True)
+
+    def compute_mmd(self):
+        """ MMD """
+        self.sess.run([self.ds_mmd_z_init_op,
+                       self.ds_mmd_real_init_op])
+        logMDD_value = \
+            self.sess.run([self.log_mmd])
+
+        return logMDD_value
+
+    def define_inception_score_input(self):
+        """ Inception Score """
+        # "We find that it’s important to evaluate the metric on a large
+        # enough number of samples (i.e. 50k) as part of this metric measures
+        # diversity"
+        inception_z = np.random.normal(loc=0.0, scale=1.0,
+                                       size=(50000,
+                                             self.z_dim)).astype(np.float32)
+
+        ds_inception_z = \
+            tf.data.Dataset.from_tensor_slices((inception_z)) \
+            .shuffle(50000) \
+            .apply(tf.contrib.data.batch_and_drop_remainder(500))
+
+        ds_inception_z_iterator = ds_inception_z.make_initializable_iterator()
+
+        self.ds_inception_z_init_op = ds_inception_z_iterator.initializer
+        ds_inception_z_next = ds_inception_z_iterator.get_next()
+
+        inception_images, _ = \
+            self.generator(ds_inception_z_next,
+                           is_training=False,
+                           reuse=True)
+
+        if self.c_dim == 1:
+            self.inception_images = \
+                    tf.image.grayscale_to_rgb(
+                        self.ds.denorm_img(inception_images))
+
+        else:
+            self.inception_images = \
+                    self.ds.denorm_img(inception_images)
+
+    def compute_inception_score(self):
+        """ Inception score """
+        self.sess.run([self.ds_inception_z_init_op])
+
+        if self.verbosity >= 3:
+            print('[!] Computing inception score. '
+                  'This may take a while...')
+
+        inception_images = []
+        while True:
+            try:
+                inception_images_batch = \
+                    self.sess.run([self.inception_images])
+                inception_images.extend(inception_images_batch)
+            except tf.errors.OutOfRangeError:
+                break
+
+        inception_images = \
+            np.concatenate(inception_images, axis=0)
+
+        return inception_score_np.get_inception_score(inception_images)
+
+    def build_model(self):
+        self.define_input()
+        self.define_loss_fn()
+        self.define_optimizers()
+        self.define_test_sample()
+        self.define_mmd_comp()
+        self.define_inception_score_input()
+
+    def verify_checkpoint(self):
+        # restore check-point if it exits
+        if not self.redo:
+            could_load, checkpoint_counter = self.load(self.checkpoint_dir)
+            if could_load:
+                start_epoch = (int)(checkpoint_counter / self.num_batches)
+                start_batch_id = \
+                    checkpoint_counter - start_epoch * self.num_batches
+                counter = checkpoint_counter
+                if self.verbosity >= 1:
+                    print('[*] Load SUCCESS')
+            else:
+                start_epoch = 0
+                start_batch_id = 0
+                counter = 1
+                if self.verbosity >= 1:
+                    print('[!] Load failed...')
+        else:
+            start_epoch = 0
+            start_batch_id = 0
+            counter = 1
+            if self.verbosity >= 1:
+                print('[!] Redo!')
+
+        return start_epoch, start_batch_id, counter
 
     def train(self):
         # initialize all variables
@@ -447,119 +358,71 @@ class GAN(object):
         self.writer = tf.summary.FileWriter(self.log_dir + '/' +
                                             self.model_name, self.sess.graph)
 
-        # restore check-point if it exits
-        if not self.redo:
-            could_load, checkpoint_counter = self.load(self.checkpoint_dir)
-            if could_load:
-                start_epoch = (int)(checkpoint_counter / self.num_batches)
-                start_batch_id = \
-                    checkpoint_counter - start_epoch * self.num_batches
-                counter = checkpoint_counter
-                if self.verbosity >= 1:
-                    print("[*] Load SUCCESS")
-            else:
-                start_epoch = 0
-                start_batch_id = 0
-                counter = 1
-                if self.verbosity >= 1:
-                    print("[!] Load failed...")
-        else:
-            start_epoch = 0
-            start_batch_id = 0
-            counter = 1
-            if self.verbosity >= 1:
-                print("[!] Redo!")
+        start_epoch, start_batch_id, counter = self.verify_checkpoint()
 
         # plot variables
         plot_d_loss = []
         plot_g_loss = []
         plot_logMMD = []
-        # plot_inception_score = []
+        plot_inception_score = []
         first_it = counter
 
         # loop for epoch
         start_time = time.time()
-        for epoch in tqdm(range(start_epoch, self.epoch), position=1):
+
+        for epoch in trange(start_epoch, self.epoch, position=1):
             batch_number = 0
 
             pbar = tqdm(total=self.num_batches, position=0)
 
-            self.sess.run(self.training_init_op)
+            self.sess.run([self.training_init_op])
             while True:
                 try:
                     # update D and G networks
                     _, summary_str_d, d_loss, \
-                        _, summary_str_g, g_loss, \
-                        logMDD_value = \
+                        _, summary_str_g, g_loss = \
                         self.sess.run([
                             self.d_optim, self.d_sum, self.d_loss,
-                            self.g_optim, self.g_sum, self.g_loss,
-                            self.log_mmd])
+                            self.g_optim, self.g_sum, self.g_loss])
                     self.writer.add_summary(summary_str_d, counter)
                     self.writer.add_summary(summary_str_g, counter)
 
                     plot_d_loss.append(d_loss)
                     plot_g_loss.append(g_loss)
-                    plot_logMMD.append(logMDD_value)
 
-                    # """ Inception Score """
-                    # samples = self.sess.run(self.fake_images)
-                    # samples = samples * 255
-                    #
-                    # if samples.shape[-1] == 1:
-                    #     samples = np.tile(samples, reps=3)
-                    #
-                    # acc_samples_inception_score.extend(list(samples))
-
-                    # display training status
+                    # update training status
                     counter += 1
-                    pbar.update(1)
                     batch_number += 1
+                    pbar.update(1)
+
+                    if np.mod(counter, self.compute_metrics_it) == 0:
+                        plot_logMMD.append(self.compute_mmd())
+
+                        inception_mean, inception_std = \
+                            self.compute_inception_score()
+                        plot_inception_score.append(inception_mean)
+
                     if self.verbosity >= 4:
-                        print("Epoch: [%2d] [%4d] time: %4.4f,"
-                              " d_loss: %.8f, g_loss: %.8f"
+                        print('Epoch: [%2d] [%4d] time: %4.4f,'
+                              ' d_loss: %.8f, g_loss: %.8f'
                               % (epoch, batch_number,
                                  time.time() - start_time,
                                  d_loss, g_loss))
 
-                    # save training results for every 300 steps
+                    # save test results for every 300 steps
                     if self.verbosity >= 3 and \
                        self.dataset_name in \
                             ['mnist', 'fashion-mnist', 'celeba'] and \
                        np.mod(counter, 300) == 0:
-                        samples = \
-                            self.sess.run(self.fake_images)
-
-                        tot_num_samples = min(self.sample_num, self.batch_size)
-                        manifold_h = int(np.floor(np.sqrt(tot_num_samples)))
-                        manifold_w = int(np.floor(np.sqrt(tot_num_samples)))
-
-                        save_images(
-                            samples[:manifold_h * manifold_w, :, :, :],
-                            [manifold_h, manifold_w],
-                            os.path.join(
-                                check_folder(os.path.join(os.getcwd(),
-                                                          self.result_dir,
-                                                          self.model_dir)),
-                                self.model_name +
-                                '_train_{:04d}_{:04d}.png'
-                                .format(epoch, batch_number)))
-
-                        if self.bot is not None:
-                            self.bot.send_file(
-                                os.path.join(os.getcwd(),
-                                             self.result_dir, self.model_dir,
-                                             self.model_name +
-                                             '_train_{:04d}_{:04d}.png'
-                                             .format(epoch, batch_number)))
+                        self.save_test_sample(epoch, batch_number)
 
                 except tf.errors.OutOfRangeError:
                     pbar.close()
                     break
 
             if self.verbosity >= 2:
-                print("Epoch [%02d]: time: %4.4f,"
-                      " d_loss: %.8f, g_loss: %.8f"
+                print('Epoch [%02d]: time: %4.4f,'
+                      ' d_loss: %.8f, g_loss: %.8f'
                       % (epoch, time.time() - start_time,
                          np.mean(plot_d_loss[-self.batch_size:]),
                          np.mean(plot_g_loss[-self.batch_size:])))
@@ -570,16 +433,25 @@ class GAN(object):
             start_batch_id = 0
 
             # plot loss and evaluation metrics
-            # self.plot_loss(plot_d_loss, plot_g_loss, plot_M,
-            #                plot_logMMD, first_it, counter)
-            self.plot_metrics([(plot_d_loss, plot_g_loss), plot_logMMD],
-                              list(range(first_it, counter)),
-                              metric_names=[("Discriminator loss",
-                                             "Generator loss"), "log(MMD)"],
-                              n_cols=1,
-                              legend=[True, False],
-                              x_label="Iteration",
-                              y_label=["Loss", "log(MMD)"])
+            metrics_its = list(range(
+               first_it // self.compute_metrics_it,
+               counter,
+               self.compute_metrics_it))[1:]
+
+            self.plot_metrics(
+                [(plot_d_loss, plot_g_loss),
+                 plot_logMMD,
+                 plot_inception_score],
+                iterations_list=[list(range(first_it, counter)),
+                                 metrics_its,
+                                 metrics_its],
+                metric_names=[('Discriminator loss', 'Generator loss'),
+                              'log(MMD)',
+                              'Inception Score'],
+                n_cols=1,
+                legend=[True, False, False],
+                x_label=['Iteration', 'Iteration', 'Iteration'],
+                y_label=['Loss', 'log(MMD)', 'Inception Score (Average)'])
 
             # save model
             self.save(self.checkpoint_dir, counter)
@@ -612,6 +484,27 @@ class GAN(object):
                     os.path.join(os.getcwd(), self.result_dir, self.model_dir,
                                  self.model_name + '_epoch%03d' % epoch +
                                  '_test_all_classes.png'))
+        else:
+            raise NotImplementedError
+
+    def visualize_data(self, epoch, sample_max=5):
+        if self.dataset_name in ['mnist', 'fashion-mnist', 'celeba']:
+            tot_num_samples = min(self.sample_num, self.batch_size)
+            image_frame_dim = int(np.floor(np.sqrt(tot_num_samples)))
+
+            samples = self.sess.run(self.ds.denorm_img(self.inputs))
+
+            save_images(samples[:image_frame_dim * image_frame_dim, :, :, :],
+                        [image_frame_dim, image_frame_dim],
+                        check_folder(self.result_dir + '/' + self.model_dir) +
+                        '/' + self.model_name + '_epoch%03d' % epoch +
+                        '_training_data.png')
+
+            if self.bot is not None:
+                self.bot.send_file(
+                    os.path.join(self.result_dir, self.model_dir,
+                                 self.model_name + '_epoch%03d' % epoch +
+                                 '_training_data.png'))
         else:
             raise NotImplementedError
 
@@ -659,7 +552,7 @@ class GAN(object):
                         label = metric_names[ii][jj]
                     else:
                         label = "line_%01d" % jj
-                    line, = ax.plot(iterations_list, submetric,
+                    line, = ax.plot(iterations_list[ii], submetric,
                                     color='C%d' % jj,
                                     label=label)
                     lines.append(line)
@@ -668,7 +561,7 @@ class GAN(object):
                     label = metric_names[ii]
                 else:
                     label = "line_01"
-                line, = ax.plot(iterations_list, metric, color='C0',
+                line, = ax.plot(iterations_list[ii], metric, color='C0',
                                 label=label)
                 lines = [line]
 

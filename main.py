@@ -11,8 +11,8 @@ os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'
 sys.path.insert(0, '/home/DADOS1/gabriel/random/slack-bot/')
 
 # GAN Variants
-from GAN import GAN
-from CGAN import CGAN
+from DCGAN import DCGAN
+# from CGAN import CGAN
 from WGAN_GP import WGAN_GP
 from BEGAN import BEGAN
 from EBGAN import EBGAN
@@ -36,8 +36,8 @@ def parse_args():
     desc = "Tensorflow implementation of GAN collections"
     parser = argparse.ArgumentParser(description=desc)
 
-    parser.add_argument('--gan_type', type=str, default='GAN',
-                        choices=['GAN', 'BEGAN', 'WGAN_GP', 'EBGAN'],
+    parser.add_argument('--gan_type', type=str, default='DCGAN',
+                        choices=['DCGAN', 'BEGAN', 'WGAN_GP', 'EBGAN'],
                         help='The type of GAN', required=True)
     parser.add_argument('--dataset', type=str, default='mnist',
                         choices=['mnist', 'celeba'],
@@ -48,6 +48,9 @@ def parse_args():
                         help='The size of batch')
     parser.add_argument('--z_dim', type=int, default=100,
                         help='Dimension of noise vector')
+    parser.add_argument('--compute_metrics_it', type=int, default=300,
+                        help='At which iterations the evaluation'
+                             'metrics should be computed.')
     parser.add_argument('--checkpoint_dir', type=str,
                         default='_outputs/checkpoint',
                         help='Directory name to save the checkpoints')
@@ -121,7 +124,7 @@ def main():
         allow_soft_placement=True)
 
     # open session
-    models = [GAN, CGAN, WGAN_GP, BEGAN, EBGAN]
+    models = [DCGAN, WGAN_GP, BEGAN, EBGAN]
     with tf.Session(config=session_conf) as sess:
         # declare instance for GAN
 
@@ -133,6 +136,7 @@ def main():
                             batch_size=args.batch_size,
                             z_dim=args.z_dim,
                             dataset_name=args.dataset,
+                            compute_metrics_it=args.compute_metrics_it,
                             checkpoint_dir=args.checkpoint_dir,
                             result_dir=args.result_dir,
                             log_dir=args.log_dir,

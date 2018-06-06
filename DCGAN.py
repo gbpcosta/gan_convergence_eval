@@ -5,7 +5,7 @@ import time
 import tensorflow as tf
 import numpy as np
 import dataset
-from tqdm import tqdm
+from tqdm import tqdm, trange
 from utils.utils import check_folder
 from utils.utils import save_images
 
@@ -21,8 +21,8 @@ plt.switch_backend("Agg")
 slim = tf.contrib.slim
 
 
-class WGAN_GP(GAN):
-    model_name = "WGAN_GP"     # name for checkpoint
+class DCGAN(GAN):
+    model_name = "DCGAN"     # name for checkpoint
 
     def __init__(self, sess, epoch, batch_size, z_dim, dataset_name,
                  compute_metrics_it, checkpoint_dir, result_dir,
@@ -32,23 +32,11 @@ class WGAN_GP(GAN):
                          log_dir, bot, redo, verbosity)
 
         if self.dataset_name in ['mnist', 'fashion-mnist']:
-            # WGAN_GP parameter
-            self.lambd = 0.25
-            # The higher value, the more stable, but the slower convergence
-            self.disc_iters = 1
-            # The number of critic iterations for one-step of generator
-
             # train
             self.learning_rate = 0.0002
             self.beta1 = 0.5
 
         elif self.dataset_name in ['celeba']:
-            # WGAN_GP parameter
-            self.lambd = 0.25
-            # The higher value, the more stable, but the slower convergence
-            self.disc_iters = 5
-            # The number of critic iterations for one-step of generator
-
             # train
             self.learning_rate = 0.0002
             self.beta1 = 0.5
@@ -66,7 +54,7 @@ class WGAN_GP(GAN):
             # Network Architecture is exactly same as in infoGAN
             # (https://arxiv.org/abs/1606.03657)
             # Architecture : (64)4c2s-(128)4c2s_BL-FC1024_BL-FC1_S
-            with tf.variable_scope("discriminator", reuse=reuse) as vs:
+            with tf.variable_scope('discriminator', reuse=reuse) as vs:
 
                 net = slim.conv2d(x, 64, 4, 2,
                                   weights_initializer=tf.truncated_normal_initializer(stddev=0.02),
@@ -178,7 +166,7 @@ class WGAN_GP(GAN):
             # Network Architecture is exactly same as in infoGAN
             # (https://arxiv.org/abs/1606.03657)
             # Architecture : FC1024_BR-FC7x7x128_BR-(64)4dc2s_BR-(1)4dc2s_S
-            with tf.variable_scope("generator", reuse=reuse) as vs:
+            with tf.variable_scope('generator', reuse=reuse) as vs:
 
                 net = slim.batch_norm(
                     slim.fully_connected(z, 1024, activation_fn=None,
@@ -303,7 +291,7 @@ class WGAN_GP(GAN):
     def define_loss_fn(self):
         """ Loss Function """
 
-        # output of D for fake images
+        # output of D for real and fake images
         G, self.g_vars = self.generator(self.z, is_training=True, reuse=False)
 
         D_real, D_real_logits, self.d_vars = \
@@ -323,34 +311,25 @@ class WGAN_GP(GAN):
         #     tf.split(self.ds.denorm_img(D_logits), 2)
 
         # get loss for discriminator
-        d_loss_real = - tf.reduce_mean(D_real_logits)
-        d_loss_fake = tf.reduce_mean(D_fake_logits)
+        d_loss_real = tf.reduce_mean(
+            tf.nn.sigmoid_cross_entropy_with_logits(
+                logits=D_real_logits, labels=tf.ones_like(D_real)))
+        d_loss_fake = tf.reduce_mean(
+            tf.nn.sigmoid_cross_entropy_with_logits(
+                logits=D_fake_logits, labels=tf.zeros_like(D_fake)))
 
         self.d_loss = d_loss_real + d_loss_fake
 
         # get loss for generator
-        self.g_loss = - d_loss_fake
-
-        """ Gradient Penalty """
-        # This is borrowed from
-        # https://github.com/kodalinaveen3/DRAGAN/blob/master/DRAGAN.ipynb
-        alpha = tf.random_uniform(shape=self.inputs.get_shape(), minval=0.,
-                                  maxval=1.)
-        differences = G - self.inputs  # This is different from MAGAN
-        interpolates = self.inputs + (alpha * differences)
-        _, D_inter, _ = \
-            self.discriminator(interpolates, is_training=True, reuse=True)
-        gradients = tf.gradients(D_inter, [interpolates])[0]
-        slopes = tf.sqrt(tf.reduce_sum(tf.square(gradients),
-                                       reduction_indices=[1]))
-        gradient_penalty = tf.reduce_mean((slopes - 1.) ** 2)
-        self.d_loss += self.lambd * gradient_penalty
+        self.g_loss = tf.reduce_mean(
+            tf.nn.sigmoid_cross_entropy_with_logits(
+                logits=D_fake_logits, labels=tf.ones_like(D_fake)))
 
         """ Summary """
-        d_loss_real_sum = tf.summary.scalar("d_loss_real", d_loss_real)
-        d_loss_fake_sum = tf.summary.scalar("d_loss_fake", d_loss_fake)
-        d_loss_sum = tf.summary.scalar("d_loss", self.d_loss)
-        g_loss_sum = tf.summary.scalar("g_loss", self.g_loss)
+        d_loss_real_sum = tf.summary.scalar('d_loss_real', d_loss_real)
+        d_loss_fake_sum = tf.summary.scalar('d_loss_fake', d_loss_fake)
+        d_loss_sum = tf.summary.scalar('d_loss', self.d_loss)
+        g_loss_sum = tf.summary.scalar('g_loss', self.g_loss)
 
         # final summary operations
         self.g_sum = tf.summary.merge([d_loss_fake_sum, g_loss_sum])
@@ -366,11 +345,13 @@ class WGAN_GP(GAN):
         # optimizers
         with tf.control_dependencies(
                 tf.get_collection(tf.GraphKeys.UPDATE_OPS)):
+
             self.d_optim = \
                 tf.train.AdamOptimizer(self.learning_rate, beta1=self.beta1) \
                 .minimize(self.d_loss, var_list=self.d_vars)
             self.g_optim = \
-                tf.train.AdamOptimizer(self.learning_rate, beta1=self.beta1)\
+                tf.train.AdamOptimizer(self.learning_rate,
+                                       beta1=self.beta1) \
                 .minimize(self.g_loss, var_list=self.g_vars)
 
     def build_model(self):
@@ -382,7 +363,6 @@ class WGAN_GP(GAN):
         self.define_inception_score_input()
 
     def train(self):
-
         # initialize all variables
         tf.global_variables_initializer().run()
 
@@ -406,12 +386,12 @@ class WGAN_GP(GAN):
         # loop for epoch
         start_time = time.time()
 
-        for epoch in tqdm(range(start_epoch, self.epoch), position=1):
+        for epoch in trange(start_epoch, self.epoch, position=1):
             batch_number = 0
 
             pbar = tqdm(total=self.num_batches, position=0)
 
-            self.sess.run(self.training_init_op)
+            self.sess.run([self.training_init_op])
             while True:
                 try:
                     # update D and G networks
@@ -426,10 +406,10 @@ class WGAN_GP(GAN):
                     plot_d_loss.append(d_loss)
                     plot_g_loss.append(g_loss)
 
-                    # display training status
+                    # update training status
                     counter += 1
-                    pbar.update(1)
                     batch_number += 1
+                    pbar.update(1)
 
                     if np.mod(counter, self.compute_metrics_it) == 0:
                         plot_logMMD.append(self.compute_mmd()[0])
@@ -439,13 +419,13 @@ class WGAN_GP(GAN):
                         plot_inception_score.append(inception_mean)
 
                     if self.verbosity >= 4:
-                        print("Epoch: [%2d] [%4d] time: %4.4f,"
-                              " d_loss: %.8f, g_loss: %.8f"
+                        print('Epoch: [%2d] [%4d] time: %4.4f,'
+                              ' d_loss: %.8f, g_loss: %.8f'
                               % (epoch, batch_number,
                                  time.time() - start_time,
                                  d_loss, g_loss))
 
-                    # save training results for every 300 steps
+                    # save test results for every 300 steps
                     if self.verbosity >= 3 and \
                        self.dataset_name in \
                             ['mnist', 'fashion-mnist', 'celeba'] and \
@@ -457,8 +437,8 @@ class WGAN_GP(GAN):
                     break
 
             if self.verbosity >= 2:
-                print("Epoch [%02d]: time: %4.4f,"
-                      " d_loss: %.8f, g_loss: %.8f"
+                print('Epoch [%02d]: time: %4.4f,'
+                      ' d_loss: %.8f, g_loss: %.8f'
                       % (epoch, time.time() - start_time,
                          np.mean(plot_d_loss[-self.batch_size:]),
                          np.mean(plot_g_loss[-self.batch_size:])))
@@ -496,4 +476,4 @@ class WGAN_GP(GAN):
             self.visualize_results(epoch)
 
         # save model for final step
-        self.save(self.checkpoint_dir, counter)
+        # self.save(self.checkpoint_dir, counter)

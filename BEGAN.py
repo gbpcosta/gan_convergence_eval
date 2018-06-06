@@ -9,43 +9,29 @@ from tqdm import tqdm
 from utils.utils import check_folder
 from utils.utils import save_images
 
-import mmd
-# import inception_score
+from GAN import GAN
 
 from matplotlib.gridspec import GridSpec
 from matplotlib.ticker import FormatStrFormatter
 import matplotlib.pyplot as plt
 import matplotlib.colors as colors
 from matplotlib import ticker
-plt.switch_backend("Agg")
+plt.switch_backend('Agg')
 
 slim = tf.contrib.slim
 
 
-class BEGAN(object):
-    model_name = "BEGAN"     # name for checkpoint
+class BEGAN(GAN):
+    model_name = 'BEGAN'     # name for checkpoint
 
     def __init__(self, sess, epoch, batch_size, z_dim, dataset_name,
-                 checkpoint_dir, result_dir, log_dir, bot, redo, verbosity):
-        self.sess = sess
-        self.dataset_name = dataset_name.lower()
-        self.checkpoint_dir = checkpoint_dir
-        self.result_dir = result_dir
-        self.log_dir = log_dir
-        self.epoch = epoch
-        self.batch_size = batch_size
-        self.bot = bot
-        self.redo = redo
-        self.verbosity = verbosity
+                 compute_metrics_it, checkpoint_dir, result_dir,
+                 log_dir, bot, redo, verbosity):
+        super().__init__(sess, epoch, batch_size, z_dim, dataset_name,
+                         compute_metrics_it, checkpoint_dir, result_dir,
+                         log_dir, bot, redo, verbosity)
 
         if self.dataset_name in ['mnist', 'fashion-mnist']:
-            # parameters
-            self.input_height = 28
-            self.input_width = 28
-
-            self.z_dim = z_dim         # dimension of noise-vector
-            self.c_dim = 1
-
             # BEGAN Parameter
             self.gamma = 0.75
             self.lamda = 0.001
@@ -54,39 +40,17 @@ class BEGAN(object):
             self.learning_rate = 0.0002
             self.beta1 = 0.5
 
-            # test
-            self.sample_num = 64  # number of generated images to be saved
-
-            # load mnist
-            self.ds = dataset.MNIST(self.batch_size)
-            self.num_batches = self.ds.N_TRAIN_SAMPLES // self.batch_size
-
             # architecture hyper parameters
-            self.data_format = 'NHWC'
             self.code_dim = 32
 
         elif self.dataset_name in ['celeba']:
-            # parameters
-            self.input_height = 64
-            self.input_width = 64
-
-            self.z_dim = z_dim         # dimension of noise-vector
-            self.c_dim = 3
-
             # BEGAN Parameter
             self.gamma = 0.5
             self.lamda = 0.001
 
             # train
-            self.learning_rate = 0.00008
+            self.learning_rate = 0.00001
             self.beta1 = 0.5
-
-            # test
-            self.sample_num = 64  # number of generated images to be saved
-
-            # load CelebA
-            self.ds = dataset.CelebA(self.batch_size)
-            self.num_batches = self.ds.N_TRAIN_SAMPLES // self.batch_size
 
             # architecture hyper parameters
             self.repeat_num = int(np.log2(self.input_height)) - 2
@@ -101,7 +65,7 @@ class BEGAN(object):
         if self.dataset_name in ['mnist', 'fashion-mnist']:
             # It must be Auto-Encoder style architecture
             # Architecture : (64)4c2s-FC32_BR-FC64*14*14_BR-(1)4dc2s_S
-            with tf.variable_scope("discriminator", reuse=reuse) as vs:
+            with tf.variable_scope('discriminator', reuse=reuse) as vs:
                 # net = tf.nn.relu(conv2d(x, 64, 4, 4, 2, 2, name='d_conv1'))
                 net = slim.conv2d(x, 64, 4, 2,
                                   weights_initializer=tf.truncated_normal_initializer(stddev=0.02),
@@ -164,7 +128,7 @@ class BEGAN(object):
 
         elif self.dataset_name in ['celeba']:
             # Architecture from: https://git.io/vhqBv
-            with tf.variable_scope("discriminator", reuse=reuse) as vs:
+            with tf.variable_scope('discriminator', reuse=reuse) as vs:
                 # Encoder
                 net = slim.conv2d(x, self.hidden_num, 3, 1,
                                   activation_fn=tf.nn.elu,
@@ -238,7 +202,7 @@ class BEGAN(object):
             # Network Architecture is exactly same as in infoGAN
             # (https://arxiv.org/abs/1606.03657)
             # Architecture : FC1024_BR-FC7x7x128_BR-(64)4dc2s_BR-(1)4dc2s_S
-            with tf.variable_scope("generator", reuse=reuse) as vs:
+            with tf.variable_scope('generator', reuse=reuse) as vs:
                 # net = tf.nn.relu(bn(linear(z, 1024, scope='g_fc1'),
                 #                     is_training=is_training, scope='g_bn1'))
                 net = slim.batch_norm(
@@ -310,7 +274,7 @@ class BEGAN(object):
 
         elif self.dataset_name in ['celeba']:
             # Architecture from: https://git.io/vhqBv
-            with tf.variable_scope("generator", reuse=reuse) as vs:
+            with tf.variable_scope('generator', reuse=reuse) as vs:
                 num_output = int(np.prod(
                     [(self.input_width // 8),
                      (self.input_height // 8),
@@ -346,39 +310,11 @@ class BEGAN(object):
         else:
             raise NotImplementedError
 
-    def build_model(self):
-        """ BEGAN variable """
-        self.k = tf.Variable(0., trainable=False)
-
-        """ Graph Input """
-
-        # images
-        # create general iterator
-        self.iterator = \
-            tf.data.Iterator.from_structure(self.ds.output_types,
-                                            self.ds.output_shapes)
-
-        self.training_init_op = \
-            self.iterator.make_initializer(self.ds.train_ds)
-
-        if self.ds.valid_ds is not None:
-            self.validation_init_op = \
-                self.iterator.make_initializer(self.ds.valid_ds)
-
-        if self.ds.test_ds is not None:
-            self.testing_init_op = \
-                self.iterator.make_initializer(self.ds.test_ds)
-
-        next_element, _ = self.iterator.get_next()
-        self.inputs = next_element
-
-        # noises
-        self.z = tf.random_normal([self.batch_size, self.z_dim])
-
-        """ Loss Function """
+    def define_loss_fn(self):
+        ''' Loss Function '''
 
         # output of D for fake images
-        G, g_vars = self.generator(self.z, is_training=True, reuse=False)
+        G, self.g_vars = self.generator(self.z, is_training=True, reuse=False)
 
         # D_out, D_code, d_vars = \
         #     self.discriminator(tf.concat([self.inputs, G], axis=0),
@@ -396,7 +332,7 @@ class BEGAN(object):
         #     tf.abs(self.D_fake_img -
         #            self.ds.denorm_img(G)))
 
-        self.D_real_img, self.D_real_code, d_vars = \
+        self.D_real_img, self.D_real_code, self.d_vars = \
             self.discriminator(self.inputs,
                                is_training=True, reuse=False)
         self.D_fake_img, self.D_fake_code, _ = \
@@ -428,7 +364,21 @@ class BEGAN(object):
             self.k + self.lamda *
             (self.gamma * D_real_err - D_fake_err))
 
-        """ Training """
+        ''' Summary '''
+        d_loss_real_sum = tf.summary.scalar('d_error_real', D_real_err)
+        d_loss_fake_sum = tf.summary.scalar('d_error_fake', D_fake_err)
+        d_loss_sum = tf.summary.scalar('d_loss', self.d_loss)
+        g_loss_sum = tf.summary.scalar('g_loss', self.g_loss)
+        M_sum = tf.summary.scalar('M', self.M)
+        k_sum = tf.summary.scalar('k', self.k)
+
+        # final summary operations
+        self.g_sum = tf.summary.merge([d_loss_fake_sum, g_loss_sum])
+        self.d_sum = tf.summary.merge([d_loss_real_sum, d_loss_sum])
+        self.p_sum = tf.summary.merge([M_sum, k_sum])
+
+    def define_optimizers(self):
+        ''' Training '''
         # divide trainable variables into a group for D and a group for G
         # t_vars = tf.trainable_variables()
         # d_vars = [var for var in t_vars if 'd_' in var.name]
@@ -439,43 +389,21 @@ class BEGAN(object):
                 tf.get_collection(tf.GraphKeys.UPDATE_OPS)):
             self.d_optim = \
                 tf.train.AdamOptimizer(self.learning_rate, beta1=self.beta1) \
-                .minimize(self.d_loss, var_list=d_vars)
+                .minimize(self.d_loss, var_list=self.d_vars)
             self.g_optim = \
-                tf.train.AdamOptimizer(5*self.learning_rate, beta1=self.beta1)\
-                .minimize(self.g_loss, var_list=g_vars)
+                tf.train.AdamOptimizer(self.learning_rate, beta1=self.beta1)\
+                .minimize(self.g_loss, var_list=self.g_vars)
 
-        """" Testing """
-        # for test
-        self.sample_z = tf.constant(
-            np.random.normal(loc=0.0, scale=1.0,
-                             size=(self.batch_size, self.z_dim))
-            .astype(np.float32))
+    def build_model(self):
+        ''' BEGAN variable '''
+        self.k = tf.Variable(0., trainable=False)
 
-        fake_images, _ = self.generator(self.sample_z, is_training=False,
-                                        reuse=True)
-        self.fake_images = self.ds.denorm_img(fake_images)
-
-        """ Summary """
-        d_loss_real_sum = tf.summary.scalar("d_error_real", D_real_err)
-        d_loss_fake_sum = tf.summary.scalar("d_error_fake", D_fake_err)
-        d_loss_sum = tf.summary.scalar("d_loss", self.d_loss)
-        g_loss_sum = tf.summary.scalar("g_loss", self.g_loss)
-        M_sum = tf.summary.scalar("M", self.M)
-        k_sum = tf.summary.scalar("k", self.k)
-
-        # final summary operations
-        self.g_sum = tf.summary.merge([d_loss_fake_sum, g_loss_sum])
-        self.d_sum = tf.summary.merge([d_loss_real_sum, d_loss_sum])
-        self.p_sum = tf.summary.merge([M_sum, k_sum])
-
-        """ MMD """
-        aux_1 = tf.reshape(G, [-1, self.input_width * self.input_height *
-                               self.c_dim])
-
-        aux_2 = tf.reshape(self.inputs, [-1, self.input_width *
-                                         self.input_height * self.c_dim])
-
-        self.log_mmd = tf.log(mmd.rbf_mmd2(aux_1, aux_2))
+        self.define_input()
+        self.define_loss_fn()
+        self.define_optimizers()
+        self.define_test_sample()
+        self.define_mmd_comp()
+        self.define_inception_score_input()
 
     def train(self):
 
@@ -490,27 +418,7 @@ class BEGAN(object):
                                             self.model_name, self.sess.graph)
 
         # restore check-point if it exits
-        if not self.redo:
-            could_load, checkpoint_counter = self.load(self.checkpoint_dir)
-            if could_load:
-                start_epoch = (int)(checkpoint_counter / self.num_batches)
-                start_batch_id = checkpoint_counter - start_epoch * \
-                    self.num_batches
-                counter = checkpoint_counter
-                if self.verbosity >= 1:
-                    print("[*] Load SUCCESS")
-            else:
-                start_epoch = 0
-                start_batch_id = 0
-                counter = 1
-                if self.verbosity >= 1:
-                    print("[!] Load failed...")
-        else:
-            start_epoch = 0
-            start_batch_id = 0
-            counter = 1
-            if self.verbosity >= 1:
-                print("[!] Redo!")
+        start_epoch, start_batch_id, counter = self.verify_checkpoint()
 
         # plot variables
         plot_d_loss = []
@@ -518,10 +426,12 @@ class BEGAN(object):
         plot_M = []
         plot_k_value = []
         plot_logMMD = []
+        plot_inception_score = []
         first_it = counter
 
         # loop for epoch
         start_time = time.time()
+
         for epoch in tqdm(range(start_epoch, self.epoch), position=1):
             batch_number = 0
 
@@ -533,83 +443,54 @@ class BEGAN(object):
                     # update D and G networks
                     _, summary_str_d, d_loss, \
                         _, summary_str_g, g_loss, \
-                        _, summary_str_k, M_value, k_value, \
-                        logMDD_value = \
+                        _, summary_str_k, M_value, k_value = \
                         self.sess.run([
                             self.d_optim, self.d_sum, self.d_loss,
                             self.g_optim, self.g_sum, self.g_loss,
-                            self.update_k, self.p_sum, self.M, self.k,
-                            self.log_mmd])
+                            self.update_k, self.p_sum, self.M, self.k])
                     self.writer.add_summary(summary_str_d, counter)
                     self.writer.add_summary(summary_str_g, counter)
                     self.writer.add_summary(summary_str_k, counter)
 
-                    plot_d_loss.append(d_loss / self.batch_size)
-                    plot_g_loss.append(g_loss / self.batch_size)
-                    plot_logMMD.append(logMDD_value / self.batch_size)
-                    plot_M.append(M_value / self.batch_size)
+                    plot_d_loss.append(d_loss)
+                    plot_g_loss.append(g_loss)
+                    plot_M.append(M_value)
                     plot_k_value.append(k_value)
-
-                    # """ Inception Score """
-                    # samples = self.sess.run(self.fake_images)
-                    # samples = samples * 255
-                    #
-                    # if samples.shape[-1] == 1:
-                    #     samples = np.tile(samples, reps=3)
-                    #
-                    # acc_samples_inception_score.extend(list(samples))
 
                     # display training status
                     counter += 1
                     pbar.update(1)
                     batch_number += 1
+
+                    if np.mod(counter, self.compute_metrics_it) == 0:
+                        plot_logMMD.append(self.compute_mmd()[0])
+
+                        inception_mean, inception_std = \
+                            self.compute_inception_score()
+                        plot_inception_score.append(inception_mean)
+
                     if self.verbosity >= 4:
-                        print("Epoch: [%2d] [%4d / %4d] time: %4.4f,"
-                              " d_loss: %.8f, g_loss: %.8f"
+                        print('Epoch: [%2d] [%4d / %4d] time: %4.4f,'
+                              ' d_loss: %.8f, g_loss: %.8f'
                               % (epoch, batch_number, self.num_batches,
                                  time.time() - start_time,
                                  d_loss, g_loss))
 
-                    # save training results for every 300 steps
+                    # save test results for every 300 steps
                     if self.verbosity >= 3 and \
                        self.dataset_name in \
                             ['mnist', 'fashion-mnist', 'celeba'] and \
                        np.mod(counter, 300) == 0:
-
-                        samples = \
-                            self.sess.run(self.fake_images)
-
-                        tot_num_samples = min(self.sample_num, self.batch_size)
-                        manifold_h = int(np.floor(np.sqrt(tot_num_samples)))
-                        manifold_w = int(np.floor(np.sqrt(tot_num_samples)))
-
-                        save_images(
-                            samples[:manifold_h * manifold_w, :, :, :],
-                            [manifold_h, manifold_w],
-                            os.path.join(
-                                check_folder(os.path.join(os.getcwd(),
-                                                          self.result_dir,
-                                                          self.model_dir)),
-                                self.model_name +
-                                '_train_{:04d}_{:04d}.png'
-                                .format(epoch, batch_number)))
-
-                        if self.bot is not None:
-                            self.bot.send_file(
-                                os.path.join(os.getcwd(),
-                                             self.result_dir, self.model_dir,
-                                             self.model_name +
-                                             '_train_{:04d}_{:04d}.png'
-                                             .format(epoch, batch_number)))
+                        self.save_test_sample(epoch, batch_number)
 
                 except tf.errors.OutOfRangeError:
                     pbar.close()
                     break
 
             if self.verbosity >= 2:
-                print("Epoch [%02d]: time: %4.4f,"
-                      " d_loss: %.8f, g_loss: %.8f,"
-                      " M: %.8f, k: %.8f"
+                print('Epoch [%02d]: time: %4.4f,'
+                      ' d_loss: %.8f, g_loss: %.8f,'
+                      ' M: %.8f, k: %.8f'
                       % (epoch, time.time() - start_time,
                          np.mean(plot_d_loss[-self.batch_size:]),
                          np.mean(plot_g_loss[-self.batch_size:]),
@@ -622,20 +503,33 @@ class BEGAN(object):
             start_batch_id = 0
 
             # plot loss and evaluation metrics
-            # self.plot_loss(plot_d_loss, plot_g_loss, plot_M,
-            #                plot_logMMD, first_it, counter)
-            self.plot_metrics([(plot_d_loss, plot_g_loss), plot_logMMD, plot_M, plot_k_value],
-                              list(range(first_it, counter)),
-                              metric_names=[("Discriminator loss",
-                                             "Generator loss"), "log(MMD)",
-                                             "M",
-                                             "k"],
-                              n_cols=2,
-                              legend=[True, False, False, False],
-                              x_label="Iteration",
-                              y_label=["Loss", "log(MMD)", "M Value", "k Value"],
-                              fig_wsize=22, fig_hsize=16
-                              )
+            metrics_its = list(range(
+               first_it // self.compute_metrics_it,
+               counter,
+               self.compute_metrics_it))[1:]
+
+            self.plot_metrics(
+                [(plot_d_loss, plot_g_loss),
+                 plot_M,
+                 plot_k_value,
+                 plot_logMMD,
+                 plot_inception_score],
+                [list(range(first_it, counter)),
+                 list(range(first_it, counter)),
+                 list(range(first_it, counter)),
+                 metrics_its,
+                 metrics_its],
+                metric_names=[('Discriminator loss', 'Generator loss'),
+                              'M',
+                              'k',
+                              'log(MMD)',
+                              'Inception Score'],
+                n_cols=2,
+                legend=[True, False, False, False, False],
+                x_label='Iteration',
+                y_label=['Loss', 'M Value', 'k Value',
+                         'log(MMD)', 'Inception Score'],
+                fig_wsize=22, fig_hsize=16)
 
             # save model
             self.save(self.checkpoint_dir, counter)
@@ -645,177 +539,3 @@ class BEGAN(object):
 
         # save model for final step
         self.save(self.checkpoint_dir, counter)
-
-    def visualize_results(self, epoch, sample_max=5):
-        if self.dataset_name in ['mnist', 'fashion-mnist', 'celeba']:
-            tot_num_samples = min(self.sample_num, self.batch_size)
-            image_frame_dim = int(np.floor(np.sqrt(tot_num_samples)))
-
-            samples = self.sess.run(self.fake_images)
-
-            save_images(samples[:image_frame_dim * image_frame_dim, :, :, :],
-                        [image_frame_dim, image_frame_dim],
-                        check_folder(self.result_dir + '/' + self.model_dir) +
-                        '/' + self.model_name + '_epoch%03d' % epoch +
-                        '_test_all_classes.png')
-
-            if self.bot is not None:
-                self.bot.send_file(
-                    os.path.join(self.result_dir, self.model_dir,
-                                 self.model_name + '_epoch%03d' % epoch +
-                                 '_test_all_classes.png'))
-        else:
-            raise NotImplementedError
-
-    def visualize_data(self, epoch, sample_max=5):
-        if self.dataset_name in ['mnist', 'fashion-mnist', 'celeba']:
-            tot_num_samples = min(self.sample_num, self.batch_size)
-            image_frame_dim = int(np.floor(np.sqrt(tot_num_samples)))
-
-            samples = self.sess.run(self.ds.denorm_img(self.inputs))
-
-            save_images(samples[:image_frame_dim * image_frame_dim, :, :, :],
-                        [image_frame_dim, image_frame_dim],
-                        check_folder(self.result_dir + '/' + self.model_dir) +
-                        '/' + self.model_name + '_epoch%03d' % epoch +
-                        '_training_data.png')
-
-            if self.bot is not None:
-                self.bot.send_file(
-                    os.path.join(self.result_dir, self.model_dir,
-                                 self.model_name + '_epoch%03d' % epoch +
-                                 '_training_data.png'))
-        else:
-            raise NotImplementedError
-
-    def plot_metrics(self, metrics_list, iterations_list,
-                     metric_names=None, n_cols=2, legend=False, x_label=None,
-                     y_label=None, wspace=None, hspace=None,
-                     fig_wsize=16, fig_hsize=16):
-        # cmap=plt.cm.tab20
-        assert isinstance(metrics_list, (list, tuple)) and \
-            not isinstance(metrics_list, str)
-
-        # fig, ax1 = plt.subplots(1,1, figsize=(10,8))
-        fig = plt.figure(figsize=(fig_wsize, fig_hsize))
-
-        grid_cols = n_cols
-        grid_rows = int(np.ceil(len(metrics_list) / n_cols))
-
-        gs = GridSpec(grid_rows, grid_cols)
-        if wspace is not None and hspace is not None:
-            gs.update(wspace=wspace, hspace=hspace)
-        elif wspace is not None:
-            gs.update(wspace=wspace)
-        elif hspace is not None:
-            gs.update(hspace=hspace)
-
-        n_plots = len(metrics_list)
-
-        for ii, metric in enumerate(metrics_list):
-            # if isinstance(first_it, (list, tuple)) and \
-            #    isinstance(it_counter, (list, tuple)):
-            #     list_it = range(first_it[ii], it_counter[ii])
-            # else:
-            #     list_it = range(first_it, it_counter)
-
-            # if (n_plots % n_cols != 0) or (ii // n_cols == grid_rows):
-            ax = plt.subplot(gs[ii // n_cols, ii % n_cols])
-            # else:
-
-            ax.yaxis.set_major_formatter(FormatStrFormatter('%.4f'))
-
-            if isinstance(metric[0], (list, tuple)):
-                lines = []
-                for jj, submetric in enumerate(metric):
-                    if metric_names is not None:
-                        label = metric_names[ii][jj]
-                    else:
-                        label = "line_%01d" % jj
-                    line, = ax.plot(iterations_list, submetric,
-                                    color='C%d' % jj,
-                                    label=label)
-                    lines.append(line)
-            else:
-                if metric_names is not None:
-                    label = metric_names[ii]
-                else:
-                    label = "line_01"
-                line, = ax.plot(iterations_list, metric, color='C0',
-                                label=label)
-                lines = [line]
-
-            if (not isinstance(legend, (list, tuple)) and legend) or \
-                    (isinstance(legend, (list, tuple)) and legend[ii]):
-                lg = ax.legend(handles=lines,
-                               bbox_to_anchor=(1.0, 1.0),
-                               loc="upper left")
-                bbox_extra_artists = (lg, )
-            else:
-                bbox_extra_artists = None
-
-            if x_label is not None and not isinstance(x_label, (list, tuple)):
-                ax.set_xlabel(x_label, color='k')
-            elif isinstance(x_label, (list, tuple)):
-                ax.set_xlabel(x_label[ii], color='k')
-
-            # Make the y-axis label, ticks and tick labels
-            # match the line color.
-            if y_label is not None and not isinstance(y_label, (list, tuple)):
-                ax.set_ylabel(y_label, color='k')
-            elif isinstance(y_label, (list, tuple)):
-                ax.set_ylabel(y_label[ii], color='k')
-            ax.tick_params('y', colors='k')
-
-            # lg = ax2.legend(handles=[M_line], bbox_to_anchor=(1.0, 1.0),
-            # loc="lower left")
-            # lg = ax2.legend(handles=[MMD_line], bbox_to_anchor=(1.0, 1.0),
-            # loc="lower left")
-
-        plt.savefig(
-            os.path.join(check_folder(self.result_dir + '/' + self.model_dir),
-                         "metrics.png"), dpi=300,
-            bbox_extra_artists=bbox_extra_artists, bbox_inches='tight')
-        plt.close(fig)
-
-        if self.bot is not None:
-            self.bot.send_file(
-                os.path.join(self.result_dir, self.model_dir, "metrics.png"))
-
-    @property
-    def model_dir(self):
-        return "{}_{}_{}_{}".format(
-            self.model_name, self.dataset_name,
-            self.batch_size, self.z_dim)
-
-    def save(self, checkpoint_dir, step):
-        checkpoint_dir = os.path.join(checkpoint_dir, self.model_dir,
-                                      self.model_name)
-
-        if not os.path.exists(checkpoint_dir):
-            os.makedirs(checkpoint_dir)
-
-        self.saver.save(self.sess, os.path.join(checkpoint_dir,
-                        self.model_name+'.model'), global_step=step)
-
-    def load(self, checkpoint_dir):
-        import re
-        if self.verbosity >= 1:
-            print("[*] Reading checkpoints...")
-        checkpoint_dir = os.path.join(checkpoint_dir, self.model_dir,
-                                      self.model_name)
-
-        ckpt = tf.train.get_checkpoint_state(checkpoint_dir)
-        if ckpt and ckpt.model_checkpoint_path:
-            ckpt_name = os.path.basename(ckpt.model_checkpoint_path)
-            self.saver.restore(self.sess, os.path.join(checkpoint_dir,
-                               ckpt_name))
-            counter = int(next(re.finditer("(\d+)(?!.*\d)",
-                               ckpt_name)).group(0))
-            if self.verbosity >= 1:
-                print("[*] Success to read {}".format(ckpt_name))
-            return True, counter
-        else:
-            if self.verbosity >= 1:
-                print("[*] Failed to find a checkpoint")
-            return False, 0
