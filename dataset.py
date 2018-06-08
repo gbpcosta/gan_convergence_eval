@@ -112,6 +112,109 @@ class MNIST:
         self.output_shapes = self.train_ds.output_shapes
 
 
+class FASHION_MNIST:
+    TARGET_DIR = '_datasets/fashion-mnist/'
+    N_TRAIN_SAMPLES = 50000
+    N_VALID_SAMPLES = 10000
+    N_TEST_SAMPLES = 10000
+
+    @staticmethod
+    def denorm_img(norm_imgs):
+        return norm_imgs * 255
+
+    @staticmethod
+    def _load_dataset(labels=True):
+        if not os.path.exists(FASHION_MNIST.TARGET_DIR):
+            os.makedirs(FASHION_MNIST.TARGET_DIR)
+
+        if sys.version_info[0] == 2:
+            from urllib import urlretrieve
+        else:
+            from urllib.request import urlretrieve
+
+        def download(filename, source='http://fashion-mnist.s3-website.eu-central-1.amazonaws.com/'):
+            print("Downloading %s" % filename)
+            urlretrieve(source + filename, FASHION_MNIST.TARGET_DIR+filename)
+
+        def norm_img(img):
+            img = img / 255
+            return np.float32(img)
+
+        def load_mnist_images(filename):
+            if not os.path.exists(FASHION_MNIST.TARGET_DIR+filename):
+                download(filename)
+
+            with gzip.open(FASHION_MNIST.TARGET_DIR+filename, 'rb') as f:
+                data = np.frombuffer(f.read(), np.uint8, offset=16)
+
+            data = data.reshape(-1, 1, 28, 28).transpose(0, 2, 3, 1)
+
+            return norm_img(data)
+
+        def load_mnist_labels(filename):
+            if not os.path.exists(FASHION_MNIST.TARGET_DIR+filename):
+                download(filename)
+
+            with gzip.open(FASHION_MNIST.TARGET_DIR+filename, 'rb') as f:
+                data = np.frombuffer(f.read(), np.uint8, offset=8)
+
+            label = data.reshape(-1)
+
+            return label
+
+        if labels:
+            train_ims, train_labels = \
+                load_mnist_images('train-images-idx3-ubyte.gz'), \
+                load_mnist_labels('train-labels-idx1-ubyte.gz')
+
+            test_ims, test_labels = \
+                load_mnist_images('t10k-images-idx3-ubyte.gz'), \
+                load_mnist_labels('t10k-labels-idx1-ubyte.gz')
+
+            return train_ims, train_labels, test_ims, test_labels
+        else:
+            train_ims = load_mnist_images('train-images-idx3-ubyte.gz')
+            test_ims = load_mnist_images('t10k-images-idx3-ubyte.gz')
+
+            return train_ims, test_ims
+
+    def __init__(self, batch_size, train_epoch=None):
+        self.ims, self.labels, self.test_ims, self.test_labels = \
+            FASHION_MNIST._load_dataset()
+
+        self.train_ims = self.ims[:50000]
+        self.train_labels = self.labels[:50000]
+        self.valid_ims = self.ims[50000:]
+        self.valid_labels = self.labels[50000:]
+
+        self.train_ds = \
+            tf.data.Dataset.from_tensor_slices(
+                (self.train_ims, self.train_labels)) \
+            .shuffle(5000) \
+            .apply(tf.contrib.data.batch_and_drop_remainder(batch_size))
+        # .repeat(train_epoch) \
+
+        self.valid_ds = \
+            tf.data.Dataset.from_tensor_slices(
+                (self.valid_ims, self.valid_labels)) \
+            .apply(tf.contrib.data.batch_and_drop_remainder(batch_size))
+
+        self.test_ds = tf.data.Dataset.from_tensor_slices(
+            (self.test_ims, self.test_labels)) \
+            .apply(tf.contrib.data.batch_and_drop_remainder(batch_size))
+
+        # train_iterator = train_ds.make_initializable_iterator()
+        # valid_iterator = valid_ds.make_initializable_iterator()
+
+        # self.train_data_init_op, self.train_data_op = \
+        #     train_iterator.initializer, train_iterator.get_next()
+        # self.valid_data_init_op, self.valid_data_op = \
+        #     valid_iterator.initializer, valid_iterator.get_next()
+
+        self.output_types = self.train_ds.output_types
+        self.output_shapes = self.train_ds.output_shapes
+
+
 class CelebA:
     TARGET_DIR = '_datasets/CelebA'
     N_TRAIN_SAMPLES = 162770
@@ -241,6 +344,9 @@ if __name__ == "__main__":
 
     mnist = MNIST(16)
     test_ds(mnist)
+
+    fashion_mnist = FASHION_MNIST(16)
+    test_ds(fashion_mnist)
 
     celeba = CelebA(16)
     test_ds(celeba)
