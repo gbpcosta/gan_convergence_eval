@@ -11,6 +11,7 @@ from utils.utils import save_images
 
 import mmd
 import inception_score
+import fid
 
 from matplotlib.gridspec import GridSpec
 from matplotlib.ticker import FormatStrFormatter
@@ -27,7 +28,7 @@ class GAN(object):
 
     def __init__(self, sess, epoch, batch_size, z_dim, dataset_name,
                  compute_metrics_it, checkpoint_dir, result_dir,
-                 log_dir, bot, redo, verbosity):
+                 log_dir, gpu_id, bot, redo, verbosity):
         self.sess = sess
         self.dataset_name = dataset_name.lower()
         self.checkpoint_dir = checkpoint_dir
@@ -36,11 +37,12 @@ class GAN(object):
         self.epoch = epoch
         self.batch_size = batch_size
         self.compute_metrics_it = compute_metrics_it
+        self.gpu_id = gpu_id
         self.bot = bot
         self.redo = redo
         self.verbosity = verbosity
 
-        if self.dataset_name in ['mnist', 'fashion-mnist']:
+        if self.dataset_name in ['mnist']:
             # parameters
             self.input_height = 28
             self.input_width = 28
@@ -53,6 +55,24 @@ class GAN(object):
 
             # load mnist
             self.ds = dataset.MNIST(self.batch_size)
+            self.num_batches = self.ds.N_TRAIN_SAMPLES // self.batch_size
+
+            # architecture hyper parameters
+            self.data_format = 'NHWC'
+
+        elif self.dataset_name in ['fashion-mnist']:
+            # parameters
+            self.input_height = 28
+            self.input_width = 28
+
+            self.z_dim = z_dim         # dimension of noise-vector
+            self.c_dim = 1
+
+            # test
+            self.sample_num = 64  # number of generated images to be saved
+
+            # load mnist
+            self.ds = dataset.FASHION_MNIST(self.batch_size)
             self.num_batches = self.ds.N_TRAIN_SAMPLES // self.batch_size
 
             # architecture hyper parameters
@@ -214,7 +234,7 @@ class GAN(object):
         """ MMD """
         ds_mmd_real = self.ds.test_ds
 
-        ds_mmd_real = ds_mmd_real.apply(
+        ds_mmd_real = ds_mmd_real.shuffle(5000).apply(
             tf.contrib.data.batch_and_drop_remainder(
                 n_batches))
         ds_mmd_real_iterator = ds_mmd_real.make_initializable_iterator()
@@ -311,7 +331,72 @@ class GAN(object):
         inception_images = \
             np.concatenate(inception_images, axis=0)
 
-        return inception_score.get_inception_score(inception_images)
+        return inception_score.get_inception_score(inception_images,
+                                                   gpu_id=self.gpu_id)
+
+    def define_fid_input(self, n_batches=10):
+        """ FID """
+        fid_z = np.random.normal(loc=0.0, scale=1.0,
+                                 size=(50000, self.z_dim)).astype(np.float32)
+
+        ds_fid_z = \
+            tf.data.Dataset.from_tensor_slices((fid_z)) \
+            .shuffle(5000) \
+            .apply(tf.contrib.data.batch_and_drop_remainder(n_batches *
+                                                            self.batch_size))
+
+        ds_fid_z_iterator = ds_fid_z.make_initializable_iterator()
+
+        self.ds_fid_z_init_op = ds_fid_z_iterator.initializer
+        ds_fid_z_next = ds_fid_z_iterator.get_next()
+
+        fid_images, _ = \
+            self.generator(ds_fid_z_next,
+                           is_training=False,
+                           reuse=True)
+
+        ds_fid_real = self.ds.test_ds
+
+        ds_fid_real = ds_fid_real.shuffle(5000).apply(
+            tf.contrib.data.batch_and_drop_remainder(
+                n_batches))
+        ds_fid_real_iterator = ds_fid_real.make_initializable_iterator()
+
+        self.ds_fid_real_init_op = ds_fid_real_iterator.initializer
+        ds_fid_real_next, _ = ds_fid_real_iterator.get_next()
+
+        ds_fid_real_next = tf.reshape(
+            ds_fid_real_next,
+            shape=[-1, self.input_height, self.input_width, self.c_dim])
+
+        if self.c_dim == 1:
+            self.fid_z_images = \
+                tf.image.grayscale_to_rgb(
+                    self.ds.denorm_img(fid_images))
+            self.fid_real_images = \
+                tf.image.grayscale_to_rgb(
+                    self.ds.denorm_img(ds_fid_real_next))
+        else:
+            self.fid_z_images = \
+                self.ds.denorm_img(fid_images)
+            self.fid_real_images = \
+                self.ds.denorm_img(ds_fid_real_next)
+
+    def compute_fid(self, num_batches=10):
+        """ FID """
+        self.sess.run([self.ds_fid_z_init_op,
+                       self.ds_fid_real_init_op])
+
+        if self.verbosity >= 3:
+            print('[!] Computing FID. '
+                  'This may take a while...')
+
+        fid_value = self.sess.run(
+            fid.get_frechet_inception_distance(self.fid_real_images,
+                                               self.fid_z_images,
+                                               num_batches=num_batches))
+
+        return fid_value
 
     def build_model(self):
         self.define_input()
@@ -320,6 +405,7 @@ class GAN(object):
         self.define_test_sample()
         self.define_mmd_comp()
         self.define_inception_score_input()
+        self.define_fid_input()
 
     def verify_checkpoint(self):
         # restore check-point if it exits
@@ -365,6 +451,7 @@ class GAN(object):
         plot_g_loss = []
         plot_logMMD = []
         plot_inception_score = []
+        plot_FID = []
         first_it = counter
 
         # loop for epoch
@@ -401,6 +488,9 @@ class GAN(object):
                         inception_mean, inception_std = \
                             self.compute_inception_score()
                         plot_inception_score.append(inception_mean)
+
+                        fid_value = self.compute_fid()
+                        plot_FID.append(fid_value)
 
                     if self.verbosity >= 4:
                         print('Epoch: [%2d] [%4d] time: %4.4f,'
@@ -441,26 +531,31 @@ class GAN(object):
             self.plot_metrics(
                 [(plot_d_loss, plot_g_loss),
                  plot_logMMD,
-                 plot_inception_score],
+                 plot_inception_score,
+                 plot_FID],
                 iterations_list=[list(range(first_it, counter)),
+                                 metrics_its,
                                  metrics_its,
                                  metrics_its],
                 metric_names=[('Discriminator loss', 'Generator loss'),
                               'log(MMD)',
-                              'Inception Score'],
-                n_cols=1,
-                legend=[True, False, False],
-                x_label=['Iteration', 'Iteration', 'Iteration'],
-                y_label=['Loss', 'log(MMD)', 'Inception Score (Average)'])
+                              'Inception Score',
+                              'FID'],
+                n_cols=2,
+                legend=[True, False, False, False],
+                x_label='Iteration',
+                y_label=['Loss', 'log(MMD)',
+                         'Inception Score (Average)', 'FID'],
+                fig_wsize=22, fig_hsize=16)
 
             # save model
-            self.save(self.checkpoint_dir, counter)
+            # self.save(self.checkpoint_dir, counter)
 
             # show temporal results
             self.visualize_results(epoch)
 
         # save model for final step
-        self.save(self.checkpoint_dir, counter)
+        # self.save(self.checkpoint_dir, counter)
 
     def visualize_results(self, epoch):
         if self.dataset_name in ['mnist', 'fashion-mnist', 'celeba']:
