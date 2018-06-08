@@ -112,11 +112,11 @@ def logits2score(logits, batch_size=10000, gpu_id='0'):
     return np.mean(inception_scores), np.std(inception_scores)
 
 
-def get_inception_score(images):
+def get_inception_score(images, gpu_id='0'):
     assert(type(images) == np.ndarray)
 
-    logits = get_inception_probs(images)
-    mean, std = logits2score(logits)
+    logits = get_inception_probs(images, gpu_id=gpu_id)
+    mean, std = logits2score(logits, gpu_id=gpu_id)
     # Reference values: 11.34 for 49984 CIFAR-10 training set images,
     # or mean=11.31, std=0.08 if in 10 splits (default).
     return mean, std
