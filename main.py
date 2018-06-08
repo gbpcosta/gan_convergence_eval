@@ -40,7 +40,7 @@ def parse_args():
                         choices=['DCGAN', 'BEGAN', 'WGAN_GP', 'EBGAN'],
                         help='The type of GAN', required=True)
     parser.add_argument('--dataset', type=str, default='mnist',
-                        choices=['mnist', 'celeba'],
+                        choices=['mnist', 'fashion-mnist', 'celeba'],
                         help='The name of dataset')
     parser.add_argument('--epoch', type=int, default=20,
                         help='The number of epochs to run')
@@ -140,6 +140,7 @@ def main():
                             checkpoint_dir=args.checkpoint_dir,
                             result_dir=args.result_dir,
                             log_dir=args.log_dir,
+                            gpu_id=args.gpu_id,
                             bot=bot,
                             redo=args.redo,
                             verbosity=args.verbosity)
