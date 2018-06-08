@@ -26,10 +26,10 @@ class BEGAN(GAN):
 
     def __init__(self, sess, epoch, batch_size, z_dim, dataset_name,
                  compute_metrics_it, checkpoint_dir, result_dir,
-                 log_dir, bot, redo, verbosity):
+                 log_dir, gpu_id, bot, redo, verbosity):
         super().__init__(sess, epoch, batch_size, z_dim, dataset_name,
                          compute_metrics_it, checkpoint_dir, result_dir,
-                         log_dir, bot, redo, verbosity)
+                         log_dir, gpu_id, bot, redo, verbosity)
 
         if self.dataset_name in ['mnist', 'fashion-mnist']:
             # BEGAN Parameter
@@ -404,6 +404,7 @@ class BEGAN(GAN):
         self.define_test_sample()
         self.define_mmd_comp()
         self.define_inception_score_input()
+        self.define_fid_input()
 
     def train(self):
 
@@ -427,6 +428,7 @@ class BEGAN(GAN):
         plot_k_value = []
         plot_logMMD = []
         plot_inception_score = []
+        plot_FID = []
         first_it = counter
 
         # loop for epoch
@@ -468,6 +470,9 @@ class BEGAN(GAN):
                         inception_mean, inception_std = \
                             self.compute_inception_score()
                         plot_inception_score.append(inception_mean)
+
+                        fid_value = self.compute_fid()
+                        plot_FID.append(fid_value)
 
                     if self.verbosity >= 4:
                         print('Epoch: [%2d] [%4d / %4d] time: %4.4f,'
@@ -513,29 +518,32 @@ class BEGAN(GAN):
                  plot_M,
                  plot_k_value,
                  plot_logMMD,
-                 plot_inception_score],
+                 plot_inception_score,
+                 plot_FID],
                 [list(range(first_it, counter)),
                  list(range(first_it, counter)),
                  list(range(first_it, counter)),
+                 metrics_its,
                  metrics_its,
                  metrics_its],
                 metric_names=[('Discriminator loss', 'Generator loss'),
                               'M',
                               'k',
                               'log(MMD)',
-                              'Inception Score'],
+                              'Inception Score',
+                              'FID'],
                 n_cols=2,
-                legend=[True, False, False, False, False],
+                legend=[True, False, False, False, False, False],
                 x_label='Iteration',
                 y_label=['Loss', 'M Value', 'k Value',
-                         'log(MMD)', 'Inception Score'],
+                         'log(MMD)', 'Inception Score', 'FID'],
                 fig_wsize=22, fig_hsize=16)
 
             # save model
-            self.save(self.checkpoint_dir, counter)
+            # self.save(self.checkpoint_dir, counter)
 
             # show temporal results
             self.visualize_results(epoch)
 
         # save model for final step
-        self.save(self.checkpoint_dir, counter)
+        # self.save(self.checkpoint_dir, counter)
